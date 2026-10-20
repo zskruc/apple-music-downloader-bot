@@ -1,0 +1,228 @@
+name: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}
+
+x-log: &log
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-bot-image: &bot-image
+  image: ${BOT_IMAGE:-apple-music-downloader-bot:local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+x-worker: &worker
+  <<: *bot-image
+  profiles: [lyrics]
+  restart: unless-stopped
+  env_file: .env
+  volumes:
+    - ${STATE_PATH:-./runtime/state}:/state
+    - ${MUSIC_PATH:-./runtime/music}:/music
+  logging: *log
+
+x-lyrics-env: &lyrics-env
+  AMDL_STATE_DIR: /state
+  AMDL_WORD_LYRICS_STATE_DIR: /state/word-lyrics
+  AMDL_LIBRARY_ROOT: /music
+  AMDL_ALAC_OUTPUT_PATH: /music/ALAC
+  AMDL_ATMOS_OUTPUT_PATH: /music/Atmos
+  WORD_LYRICS_APPLE_WRAPPER_URL: http://wrapper
+  WRAPPER_URL: http://wrapper
+  WRAPPER_DECRYPT_HOST: wrapper
+  WRAPPER_DECRYPT_PORT: "10020"
+
+services:
+  legacy-wrapper:
+    image: ${VM_IMAGE:-apple-music-downloader-vm:local}
+    build:
+      context: .
+      dockerfile: vm/Dockerfile
+    platform: linux/amd64
+    container_name: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-legacy-wrapper
+    restart: unless-stopped
+    stop_grace_period: 60s
+    devices: [/dev/kvm:/dev/kvm]
+    environment:
+      TZ: ${TZ:-UTC}
+      UBUNTU_IMAGE_URL: ${UBUNTU_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}
+      UBUNTU_IMAGE_SHA256: ${UBUNTU_IMAGE_SHA256:-}
+      VM_MEMORY: ${VM_MEMORY:-4096}
+      VM_CPUS: ${VM_CPUS:-2}
+      VM_DISK_SIZE: ${VM_DISK_SIZE:-32G}
+      WRAPPER_SINGLE_ENABLE: ${WRAPPER_SINGLE_ENABLE:-false}
+      WRAPPER_DEVICE_INFO: ${WRAPPER_DEVICE_INFO:-}
+      WRAPPER_MANAGER_PROXY: ${WRAPPER_MANAGER_PROXY:-}
+      WRAPPER_MANAGER_MIRROR: ${WRAPPER_MANAGER_MIRROR:-false}
+    volumes:
+      - ${VM_DATA_PATH:-./runtime/vm}:/data
+    ports:
+      - "127.0.0.1:${VM_MANAGER_PORT:-18080}:18080"
+      - "127.0.0.1:${VM_SSH_HOST_PORT:-22221}:2222"
+    expose: ["10020", "20020", "30020"]
+    healthcheck:
+      test: [CMD-SHELL, "timeout 3 bash -c '</dev/tcp/127.0.0.1/10020' && timeout 3 bash -c '</dev/tcp/127.0.0.1/20020' && timeout 3 bash -c '</dev/tcp/127.0.0.1/30020'"]
+      interval: 30s
+      timeout: 12s
+      retries: 12
+      start_period: 300s
+    logging: *log
+
+  wrapper:
+    <<: *bot-image
+    container_name: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-wrapper
+    command: [python, /app/wrapper_v2_adapter.py]
+    restart: unless-stopped
+    depends_on:
+      legacy-wrapper: {condition: service_healthy}
+    environment:
+      ADAPTER_SESSION_DIR: /session
+      ADAPTER_HTTP_HOST: 0.0.0.0
+      ADAPTER_HTTP_PORT: "80"
+      ADAPTER_DECRYPT_HOST: 0.0.0.0
+      ADAPTER_DECRYPT_PORT: "10020"
+      LEGACY_WRAPPER_HOST: legacy-wrapper
+      LEGACY_WRAPPER_DECRYPT_PORT: "10020"
+      LEGACY_WRAPPER_M3U8_PORT: "20020"
+      LEGACY_WRAPPER_ACCOUNT_PORT: "30020"
+      APPLE_MUSIC_LANGUAGE: ${AMDL_LANGUAGE:-zh-CN}
+    volumes:
+      - ${WRAPPER_SESSION_PATH:-./runtime/wrapper-session}:/session
+    expose: ["80", "10020"]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1/health',timeout=8).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+    logging: *log
+
+  youtube-pot:
+    image: ${PO_PROVIDER_IMAGE:-brainicism/bgutil-ytdlp-pot-provider:2.0.2}
+    container_name: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-youtube-pot
+    init: true
+    restart: unless-stopped
+    expose: ["4416"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4416').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging: *log
+
+  bot:
+    <<: *bot-image
+    container_name: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-bot
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      wrapper: {condition: service_healthy}
+      youtube-pot: {condition: service_healthy}
+    environment:
+      <<: *lyrics-env
+      AMDL_BACKEND: gamdl
+      AMDL_LOG_DIR: /state/logs
+      AMDL_TEMP_PATH: /state/tmp
+      AMDL_HEALTH_SERVER_ENABLED: "true"
+      AMDL_GAMDL_RUNNER: /app/gamdl_with_storefront.py
+      AMDL_LIBRARY_INDEX_DB: /state/apple-music-library-index.sqlite3
+      AMDL_WRAPPER_RECOVERY_ENABLED: "false"
+      ONLINE_AUTH_AUTO_REFRESH_ENABLED: "false"
+      SYNOLOGY_CHAT_BIND: 0.0.0.0
+      SYNOLOGY_CHAT_PORT: "30871"
+      YT_AUDIO_OUTPUT_PATH: /youtube-music
+      YT_VIDEO_OUTPUT_PATH: /youtube-video
+      YT_AUDIO_DISPLAY_ROOT: /youtube-music
+      YT_VIDEO_DISPLAY_ROOT: /youtube-video
+      YT_TEMP_PATH: /state/youtube/tmp
+      YT_COOKIES_PATH: /state/youtube/cookies.txt
+      YT_PO_TOKEN_ENABLED: "true"
+      YT_PO_TOKEN_PROVIDER_URL: http://youtube-pot:4416
+      YT_PO_TOKEN_CONTAINER_NAME: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-youtube-pot
+      YT_AUTH_BROWSER_PROFILE_PATH: /youtube-auth-browser/.config/chromium/Default
+      YT_AUTH_BROWSER_CONTAINER_NAME: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-youtube-auth-browser
+      BILI_AUDIO_OUTPUT_PATH: /bilibili-music
+      BILI_VIDEO_OUTPUT_PATH: /bilibili-video
+      BILI_AUDIO_DISPLAY_ROOT: /bilibili-music
+      BILI_VIDEO_DISPLAY_ROOT: /bilibili-video
+      BILI_TEMP_PATH: /state/bilibili/tmp
+      BILI_COOKIES_PATH: /state/bilibili/cookies.txt
+      BILI_AUTH_BROWSER_PROFILE_PATH: /bilibili-auth-browser/.config/chromium/Default
+      BILI_AUTH_BROWSER_CONTAINER_NAME: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-bilibili-auth-browser
+    extra_hosts: [host.docker.internal:host-gateway]
+    ports: ["127.0.0.1:${BOT_HEALTH_PORT:-30871}:30871"]
+    volumes:
+      - ${STATE_PATH:-./runtime/state}:/state
+      - ${MUSIC_PATH:-./runtime/music}:/music
+      - ${YOUTUBE_MUSIC_PATH:-./runtime/youtube-music}:/youtube-music
+      - ${YOUTUBE_VIDEO_PATH:-./runtime/youtube-video}:/youtube-video
+      - ${BILIBILI_MUSIC_PATH:-./runtime/bilibili-music}:/bilibili-music
+      - ${BILIBILI_VIDEO_PATH:-./runtime/bilibili-video}:/bilibili-video
+      - ${YOUTUBE_BROWSER_PATH:-./runtime/youtube-browser}:/youtube-auth-browser:ro
+      - ${BILIBILI_BROWSER_PATH:-./runtime/bilibili-browser}:/bilibili-auth-browser:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:30871/health',timeout=5).read()"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+    logging: *log
+
+  word-lyrics-resolver:
+    <<: *worker
+    command: [python, -m, word_lyrics_automation.source_worker]
+    environment: *lyrics-env
+    depends_on:
+      wrapper: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import json,time,pathlib; p=json.loads(pathlib.Path('/state/word-lyrics/automation/source-worker-health.json').read_text()); assert time.time()-p['updated_at']<3600"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging: *log
+
+  word-lyrics-nas-aligner:
+    <<: *worker
+    command: [python, -m, word_lyrics_automation.nas_alignment_worker]
+    environment:
+      <<: *lyrics-env
+      WORD_LYRICS_NAS_WHISPER_BINARY: /usr/local/bin/whisper-cli
+    healthcheck:
+      test: [CMD, python, -c, "import json,time,pathlib; p=json.loads(pathlib.Path('/state/word-lyrics/automation/nas-alignment-health.json').read_text()); assert time.time()-p['updated_at']<14400"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging: *log
+
+  youtube-auth-browser:
+    profiles: [auth]
+    image: ${AUTH_BROWSER_IMAGE:-lscr.io/linuxserver/chromium:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-youtube-auth-browser
+    restart: "no"
+    shm_size: 1gb
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-UTC}
+      TITLE: YouTube login
+      CHROME_CLI: ${YOUTUBE_BROWSER_ARGS:---password-store=basic https://www.youtube.com/robots.txt}
+    extra_hosts: [host.docker.internal:host-gateway]
+    ports: ["127.0.0.1:${YOUTUBE_BROWSER_PORT:-31011}:3001"]
+    volumes: ["${YOUTUBE_BROWSER_PATH:-./runtime/youtube-browser}:/config"]
+    logging: *log
+
+  bilibili-auth-browser:
+    profiles: [auth]
+    image: ${AUTH_BROWSER_IMAGE:-lscr.io/linuxserver/chromium:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-bilibili-auth-browser
+    restart: "no"
+    shm_size: 1gb
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-UTC}
+      TITLE: Bilibili login
+      CHROME_CLI: ${BILIBILI_BROWSER_ARGS:---password-store=basic https://www.bilibili.com/robots.txt}
+    extra_hosts: [host.docker.internal:host-gateway]
+    ports: ["127.0.0.1:${BILIBILI_BROWSER_PORT:-31012}:3001"]
+    volumes: ["${BILIBILI_BROWSER_PATH:-./runtime/bilibili-browser}:/config"]
+    logging: *log

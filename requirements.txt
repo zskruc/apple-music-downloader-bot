@@ -1,0 +1,13 @@
+# Direct application dependencies. gamdl and its native engine come from PyPI;
+# no AppleMusicDecrypt sources or device material are bundled in this project.
+gamdl==3.9.1
+httpx==0.28.1
+mutagen==1.48.1
+lxml==6.1.2
+regex==2026.8.31
+requests==2.34.2
+structlog==26.1.0
+yt-dlp[default,curl-cffi]==2026.8.19
+yt-dlp-ejs==0.8.0
+bgutil-ytdlp-pot-provider==2.0.2
+beets==2.12.0

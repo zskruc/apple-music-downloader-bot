@@ -1,0 +1,44 @@
+# Explicit opt-in: Docker socket access grants administrative control of the host.
+# These watchdogs use exact container names in this Compose project only.
+services:
+  bot:
+    environment:
+      AMDL_WRAPPER_RECOVERY_ENABLED: "true"
+      AMDL_WRAPPER_RECOVERY_DOCKER_CONTAINER: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-legacy-wrapper,${COMPOSE_PROJECT_NAME:-apple-music-downloader}-wrapper
+      ONLINE_AUTH_AUTO_REFRESH_ENABLED: ${ONLINE_AUTH_AUTO_REFRESH_ENABLED:-false}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  wrapper-watchdog:
+    profiles: [self-heal]
+    image: ${BOT_IMAGE:-apple-music-downloader-bot:local}
+    command: [python, /app/stack_watchdog.py]
+    restart: unless-stopped
+    environment:
+      WATCHDOG_HEALTH_URL: http://wrapper/health
+      WATCHDOG_CONTAINERS: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-legacy-wrapper,${COMPOSE_PROJECT_NAME:-apple-music-downloader}-wrapper
+      WATCHDOG_INTERVAL_SECONDS: "30"
+      WATCHDOG_START_GRACE_SECONDS: "300"
+      WATCHDOG_FAILURES_BEFORE_RESTART: "3"
+      WATCHDOG_COOLDOWN_SECONDS: "600"
+    volumes: [/var/run/docker.sock:/var/run/docker.sock]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  bot-watchdog:
+    profiles: [self-heal]
+    image: ${BOT_IMAGE:-apple-music-downloader-bot:local}
+    command: [python, /app/stack_watchdog.py]
+    restart: unless-stopped
+    environment:
+      WATCHDOG_HEALTH_URL: http://bot:30871/health
+      WATCHDOG_CONTAINERS: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-bot
+      WATCHDOG_INTERVAL_SECONDS: "30"
+      WATCHDOG_START_GRACE_SECONDS: "120"
+      WATCHDOG_FAILURES_BEFORE_RESTART: "3"
+      WATCHDOG_COOLDOWN_SECONDS: "300"
+    volumes: [/var/run/docker.sock:/var/run/docker.sock]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
