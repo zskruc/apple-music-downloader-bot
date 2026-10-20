@@ -34,6 +34,15 @@ class MaintenanceContracts(unittest.TestCase):
             self.assertEqual(command.count(str(module.ROOT / filename)), 1)
         self.assertNotIn(str(module.ROOT / 'compose.self-heal.yaml'), command)
 
+    def test_auth_refresh_opt_in_does_not_select_watchdog_services(self):
+        stack = self.stack()
+        stack.args.auth_refresh = True
+        command = module.compose_base(stack.args)
+        self.assertIn(str(module.ROOT / 'compose.auth-refresh.yaml'), command)
+        self.assertNotIn(str(module.ROOT / 'compose.self-heal.yaml'), command)
+        self.assertNotIn('bot-watchdog', stack.selected([]))
+        self.assertNotIn('wrapper-watchdog', stack.selected([]))
+
     def test_backend_mutations_require_the_matching_overlay(self):
         with self.assertRaisesRegex(RuntimeError, '--profile sq'):
             self.stack().selected(['sqmusic-server'])
@@ -73,6 +82,40 @@ class MaintenanceContracts(unittest.TestCase):
             self.assertIn(b'synthetic credential fixture', content)
             self.assertIn(b'synthetic database', content)
             self.assertNotIn(b'synthetic staged media', content)
+
+    def test_base_backup_keeps_cookie_history_and_stopped_browser_profile(self):
+        stack = self.stack()
+        stack.args.auth_refresh = True
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = root / 'state'
+            youtube = state / 'youtube'
+            youtube.mkdir(parents=True)
+            for name in ('cookies.txt', 'cookies.txt.previous', 'history.json'):
+                (youtube / name).write_text('synthetic ' + name)
+            browser = root / 'browser'
+            browser.mkdir()
+            (browser / 'Cookies').write_text('synthetic Chromium state')
+            media = root / 'media'
+            media.mkdir()
+            (media / 'video.mkv').write_text('synthetic media')
+            stack.config['services']['bot']['volumes'] = [
+                {'type': 'bind', 'source': str(state), 'target': '/state'},
+                {'type': 'bind', 'source': str(browser), 'target': '/youtube-auth-browser', 'read_only': True},
+                {'type': 'bind', 'source': str(media), 'target': '/youtube-video'},
+            ]
+            stack.active = root / 'absent'
+            with patch.object(stack, 'inventory', return_value={}), patch.object(stack, 'require_idle'):
+                manifest = stack.backup(root / 'backup')
+            self.assertEqual(set(manifest['mounts']), {str(state.resolve()), str(browser.resolve())})
+            self.assertTrue((root / 'backup/compose.auth-refresh.yaml').is_file())
+            with tarfile.open(root / 'backup/private-data.tar') as archive:
+                content = [archive.extractfile(item).read() for item in archive.getmembers() if item.isfile()]
+            self.assertIn(b'synthetic cookies.txt', content)
+            self.assertIn(b'synthetic cookies.txt.previous', content)
+            self.assertIn(b'synthetic history.json', content)
+            self.assertIn(b'synthetic Chromium state', content)
+            self.assertNotIn(b'synthetic media', content)
 
     def test_unknown_service_is_rejected(self):
         with self.assertRaises(RuntimeError):

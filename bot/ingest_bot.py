@@ -6001,14 +6001,21 @@ def process_online_media_job(job: Job) -> None:
     try:
         observer = lambda process: online_process_observer(job, process)
         progress_observer = lambda progress: online_progress_observer(job, progress)
+        download_options = {
+            "process_observer": observer,
+            "progress_observer": progress_observer,
+        }
+        if job.kind in {"youtube_audio", "youtube_video"}:
+            download_options["cancel_observer"] = (
+                lambda: stop_event.is_set() or task_should_stop(job)
+            )
         with online_video_library_lock:
             result = downloader(
                 job.kind,
                 job.urls[0],
                 job.label,
                 LOG_DIR,
-                process_observer=observer,
-                progress_observer=progress_observer,
+                **download_options,
             )
     except Exception as exc:
         clear_active_task_process(job)

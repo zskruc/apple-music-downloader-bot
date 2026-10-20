@@ -138,9 +138,10 @@ services:
       YT_VIDEO_OUTPUT_PATH: /youtube-video
       YT_AUDIO_DISPLAY_ROOT: /youtube-music
       YT_VIDEO_DISPLAY_ROOT: /youtube-video
+      YT_STATE_DIR: /state/youtube
       YT_TEMP_PATH: /state/youtube/tmp
       YT_COOKIES_PATH: /state/youtube/cookies.txt
-      YT_PO_TOKEN_ENABLED: "true"
+      YT_PO_TOKEN_ENABLED: ${YT_PO_TOKEN_ENABLED:-true}
       YT_PO_TOKEN_PROVIDER_URL: http://youtube-pot:4416
       YT_PO_TOKEN_CONTAINER_NAME: ${COMPOSE_PROJECT_NAME:-apple-music-downloader}-youtube-pot
       YT_AUTH_BROWSER_PROFILE_PATH: /youtube-auth-browser/.config/chromium/Default

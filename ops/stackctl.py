@@ -34,6 +34,7 @@ PROFILE_SERVICES = {
     'sq': ['sq-mysql', 'sq-neteasecloudmusicapi', 'sqmusic-server'],
 }
 PRIVATE_TARGETS = {'/state', '/session', '/data', '/config', '/server/data', '/var/lib/mysql',
+                   '/youtube-auth-browser', '/bilibili-auth-browser',
                    '/run/secrets/lx-frontend-auth', '/run/secrets/sq-auth.json'}
 WRITERS = {'bot', 'wrapper', 'legacy-wrapper', 'word-lyrics-resolver',
            'word-lyrics-nas-aligner', 'youtube-auth-browser', 'bilibili-auth-browser'}
@@ -53,6 +54,8 @@ def compose_base(args: argparse.Namespace) -> list[str]:
                '--env-file', str(ROOT / '.env'), '-f', str(ROOT / 'compose.yaml')]
     if args.self_heal:
         command += ['-f', str(ROOT / 'compose.self-heal.yaml'), '--profile', 'self-heal']
+    if getattr(args, 'auth_refresh', False):
+        command += ['-f', str(ROOT / 'compose.auth-refresh.yaml')]
     for profile in dict.fromkeys(args.profile):
         if profile in PROFILE_FILES:
             command += ['-f', str(ROOT / PROFILE_FILES[profile])]
@@ -231,6 +234,8 @@ class Stack:
             # Catch a job accepted between the first idle check and container stop.
             self.require_idle()
             filenames = ['.env', 'compose.yaml', 'compose.self-heal.yaml']
+            if getattr(self.args, 'auth_refresh', False):
+                filenames.append('compose.auth-refresh.yaml')
             filenames += [PROFILE_FILES[profile] for profile in dict.fromkeys(self.args.profile)
                           if profile in PROFILE_FILES]
             for filename in filenames:
@@ -316,6 +321,7 @@ class Stack:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--self-heal', action='store_true', help='include the explicit Docker socket override')
+    parser.add_argument('--auth-refresh', action='store_true', help='allow on-demand browser refresh through Docker API')
     parser.add_argument('--profile', action='append', choices=sorted(PROFILE_SERVICES), default=[])
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ['check', 'status', 'probe']:

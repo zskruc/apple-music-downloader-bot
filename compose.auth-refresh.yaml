@@ -1,0 +1,9 @@
+# Explicit Docker API access for on-demand browser refresh.
+# This overlay does not create or enable watchdog services.
+services:
+  bot:
+    environment:
+      ONLINE_AUTH_AUTO_REFRESH_ENABLED: ${ONLINE_AUTH_AUTO_REFRESH_ENABLED:-false}
+      DOCKER_SOCKET_PATH: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

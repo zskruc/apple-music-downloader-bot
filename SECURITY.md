@@ -9,12 +9,19 @@ keys, device credentials, VM disks, databases or production logs.
 
 The deployment can optionally mount the Docker socket for browser management
 and watchdog recovery. This grants host-level control to those containers;
-review `compose.self-heal.yaml` before enabling it. Keep account and browser
+review `compose.auth-refresh.yaml` / `compose.self-heal.yaml` before enabling it. Keep account and browser
 interfaces on loopback, and use an authenticated tunnel when remote access is
 needed. Configure a Telegram chat allowlist before starting a public bot.
 
 Backups contain secrets and require restricted permissions and separate secure
 storage. Do not upload them with the public repository.
+
+YouTube's persistent Chromium profile, active Cookie file and `.previous`
+rollback copy are all login credentials. The exporter validates a private
+candidate before replacing the active file. Each yt-dlp process uses its own
+private Cookie snapshot, so a previously started process cannot overwrite a
+refreshed session. Status commands exclude Cookie values; inspect all upstream
+diagnostic output before sharing it. See the [YouTube guide](docs/YOUTUBE.en.md).
 
 The LX / SQ overlays mount private authentication files read-only and keep
 management ports on loopback. SQ staging must stay outside the published music

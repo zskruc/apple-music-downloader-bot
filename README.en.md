@@ -12,6 +12,7 @@ This repository packages a customized NAS deployment into source code, portable 
 - LX Music and SQ Music adapters and optional backend deployments; unified single-song routing attempts the same recording in Apple → LX → SQ lossless order.
 - Persistent task state, library indexing and deduplication, progress cards and failure reporting.
 - YouTube / YouTube Music and Bilibili audio or video ingestion, with optional Navidrome / Emby integration.
+- Manual/automatic YouTube captions, Chinese or Chinese-plus-original-language SRT/ASS sidecars; persistent browser sessions, candidate cookie validation, atomic updates and rollback.
 - LRC / TTML lyrics, word-timed lyric matching, persistent queues, retries and notifications.
 - A wrapper protocol adapter, KVM VM provisioning support, on-demand authentication browsers and service-scoped recovery.
 - Documented backups, upgrades, rollbacks and troubleshooting.
@@ -58,6 +59,7 @@ These steps install test dependencies; service dependencies are in `requirements
 - [Operations guide](docs/OPERATIONS.en.md) · [中文运维手册](docs/OPERATIONS.zh-CN.md)
 - [LX / SQ and unified music](docs/MUSIC_SOURCES.en.md) · [中文配置指南](docs/MUSIC_SOURCES.zh-CN.md)
 - [LX backend deployment](services/lx-music/README.md) · [SQ backend and task patch](services/sq-music/README.md)
+- [YouTube Music, video, subtitles and cookies](docs/YOUTUBE.en.md) · [中文指南](docs/YOUTUBE.zh-CN.md)
 - [Source snapshot and verification scope](docs/SOURCE_SNAPSHOT.md)
 - [Sensitive information handling](SECURITY.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)

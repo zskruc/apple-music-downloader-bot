@@ -22,7 +22,7 @@ ARG RELEASE_VERSION=source
 ARG WHISPER_CPP_REVISION=4979e04f5dcaccb36057e059bbaed8a2f5288315
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl ffmpeg tini libstdc++6 \
+    ca-certificates curl ffmpeg tini libstdc++6 fontconfig fonts-noto-cjk fonts-liberation2 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=deno /deno /usr/local/bin/deno
 COPY licenses/Deno-MIT.txt /usr/share/doc/deno/LICENSE

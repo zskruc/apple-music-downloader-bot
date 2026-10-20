@@ -61,6 +61,13 @@ images or other binary bundles, retain the actual installed packages' notices
 and fulfill their source-distribution requirements where applicable; this file
 is not a complete license inventory for a built image.
 
+The Linux image installs Debian's [Noto CJK](https://packages.debian.org/bookworm/fonts-noto-cjk)
+and [Liberation](https://packages.debian.org/bookworm/fonts-liberation2) font
+packages for the default subtitle styles. Their installed copyright/license
+files are retained under `/usr/share/doc/`; no font binaries are vendored here.
+ASS sidecars reference font names and do not embed those fonts. A separate
+player or media-server renderer needs its own appropriate fonts.
+
 AppleMusicDecrypt source and its `amdecrypt_once.py` integration are not included
 in this repository. AppleMusicDecrypt has a separate
 [AGPL-3.0 license](https://github.com/WorldObservationLog/AppleMusicDecrypt/blob/master/LICENSE.txt).

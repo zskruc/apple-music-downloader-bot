@@ -112,3 +112,36 @@ The four Compose files passed the official schema check. Python socket access
 in the test runner is limited to local loopback fixtures; external addresses
 are blocked. SQ database/root/JWT secrets from the shared `.env` are explicitly
 removed from bot and lyric-worker environments.
+
+## YouTube supplement, 2026-10-21
+
+This supplement completes the YouTube Music/video deployment configuration,
+manual and automatic caption processing documentation, bilingual ASS styling,
+persistent Chromium sessions and validated Cookie export/rollback. Chinese and
+English guides are in [YOUTUBE.zh-CN.md](YOUTUBE.zh-CN.md) and
+[YOUTUBE.en.md](YOUTUBE.en.md); the host authentication entry point is in
+`services/youtube/`. The explicit `--auth-refresh` overlay enables Docker access
+without selecting watchdog services; automatic refresh remains off by default.
+
+General recovery and cancellation behavior was adapted from local
+2026-10-19 YouTube maintenance material with a recorded production-start
+receipt. The port retains private per-process Cookie snapshots, bounded
+highest-quality retries and cancellable browser refresh. It excludes the
+separate missing SABR extraction tool and the video-client-priority candidate
+whose record says it was never deployed. New portable changes include open
+font defaults, blank proxy/LRCAPI defaults, candidate validation and rollback,
+private-session backup coverage, and the Bot's cancellation callback.
+
+The final supplemented repository passed **552 isolated tests** under Python
+3.12, including Cookie update/rollback failure boundaries, browser ownership,
+cancel propagation, subtitle selection, retry exhaustion and persistent mount
+contracts. Shell syntax and source/credential checks passed. CI also validates
+the base, authentication, watchdog and optional music Compose combinations.
+The manifest's published hashes reflect this final source; original snapshot
+paths/hashes remain as provenance for the initial curated files.
+
+本轮已补齐 YouTube Music、视频下载、中文字幕/双语外置字幕和 Cookie 持久化的
+中英文文档、配置与认证工具。Cookie 导出先校验后替换，保留上一份回滚；
+下载使用私有副本，避免旧任务覆盖新会话。552 项隔离测试通过。
+未上传真实 Cookie、浏览器 profile、私有配置或媒体；NAS IPv6 直连仍不可达，
+真实登录、下载、播放、容器构建及备份恢复仍须在部署主机验收。

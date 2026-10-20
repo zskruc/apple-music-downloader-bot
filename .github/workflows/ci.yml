@@ -25,8 +25,9 @@ jobs:
         run: |
           cp .env.example .env
           docker compose config --quiet
+          docker compose -f compose.yaml -f compose.auth-refresh.yaml --profile auth config --quiet
           docker compose -f compose.yaml -f compose.self-heal.yaml --profile self-heal config --quiet
           docker compose -f compose.yaml -f services/lx-music/compose.yaml --profile lx config --quiet
           docker compose -f compose.yaml -f services/sq-music/compose.yaml --profile sq config --quiet
-          docker compose -f compose.yaml -f services/lx-music/compose.yaml -f services/sq-music/compose.yaml -f compose.self-heal.yaml --profile lx --profile sq --profile self-heal config --quiet
-          for script in ops/stack.sh vm/*.sh; do bash -n "$script"; done
+          docker compose -f compose.yaml -f services/lx-music/compose.yaml -f services/sq-music/compose.yaml -f compose.self-heal.yaml -f compose.auth-refresh.yaml --profile lx --profile sq --profile self-heal --profile auth config --quiet
+          for script in ops/stack.sh vm/*.sh services/youtube/*.sh; do bash -n "$script"; done

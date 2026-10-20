@@ -24,6 +24,16 @@ youtube_ingest = importlib.import_module("youtube_ingest")
 
 
 class YouTubeNetworkFallbackTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Routing behavior is independent of the deployment's opt-in proxies.
+        for name, value in (
+            ("PROXY_URL", "http://proxy.example:7890"),
+            ("LARGE_DOWNLOAD_PROXY_URL", "http://proxy.example:7891"),
+        ):
+            patcher = mock.patch.object(youtube_ingest, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_parses_machine_readable_yt_dlp_progress(self) -> None:
         progress = youtube_ingest._parse_yt_dlp_progress(
             "__AMDL_PROGRESS__52428800|104857600|NA|5242880|10"

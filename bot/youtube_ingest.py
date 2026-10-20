@@ -73,10 +73,10 @@ TEMP_ROOT = Path(env("YT_TEMP_PATH", "/state/youtube/tmp"))
 AUDIO_ROOT = Path(env("YT_AUDIO_OUTPUT_PATH", "/youtube-music"))
 VIDEO_ROOT = Path(env("YT_VIDEO_OUTPUT_PATH", "/youtube-video"))
 COOKIE_PATH = Path(env("YT_COOKIES_PATH", "/state/youtube/cookies.txt"))
-PROXY_URL = env("YT_DOWNLOAD_PROXY_URL", "http://host.docker.internal:7890")
+PROXY_URL = env("YT_DOWNLOAD_PROXY_URL", "")
 LARGE_DOWNLOAD_PROXY_URL = env(
     "YT_LARGE_DOWNLOAD_PROXY_URL",
-    "http://host.docker.internal:7891",
+    "",
 )
 LARGE_DOWNLOAD_THRESHOLD_BYTES = max(
     0,
@@ -105,6 +105,16 @@ HIGH_QUALITY_RETRY_DELAY_SECONDS = max(
     15,
     int(env("YT_HIGH_QUALITY_RETRY_DELAY_SECONDS", "60") or "60"),
 )
+COOKIE_SAFE_RUNNER_PATH = Path(
+    env(
+        "YT_COOKIE_SAFE_RUNNER_PATH",
+        str(Path(__file__).with_name("yt_dlp_readonly_cookies.py")),
+    )
+)
+HIGH_QUALITY_RETRY_MAX_CYCLES = max(
+    1,
+    min(10, int(env("YT_HIGH_QUALITY_RETRY_MAX_CYCLES", "2") or "2")),
+)
 REQUIRED_COOKIE_NAMES = {
     name.strip()
     for name in env(
@@ -113,7 +123,7 @@ REQUIRED_COOKIE_NAMES = {
     ).split(",")
     if name.strip()
 }
-LRCAPI_URL = env("YT_LRCAPI_URL", "http://host.docker.internal:28883").rstrip("/")
+LRCAPI_URL = env("YT_LRCAPI_URL", "").rstrip("/")
 LRCLIB_URL = env("YT_LRCLIB_URL", "https://lrclib.net/api/search")
 PLAYLIST_MAX_ITEMS = max(1, int(env("YT_PLAYLIST_MAX_ITEMS", "50") or "50"))
 VIDEO_MAX_HEIGHT = max(0, int(env("YT_VIDEO_MAX_HEIGHT", "0") or "0"))
@@ -142,8 +152,8 @@ SUBTITLE_RATE_LIMIT_RETRY_SECONDS = max(
     5,
     int(env("YT_SUBTITLE_RATE_LIMIT_RETRY_SECONDS", "60") or "60"),
 )
-BILINGUAL_CHINESE_FONT = env("YT_BILINGUAL_CHINESE_FONT", "PingFang SC")
-BILINGUAL_ENGLISH_FONT = env("YT_BILINGUAL_ENGLISH_FONT", "Arial")
+BILINGUAL_CHINESE_FONT = env("YT_BILINGUAL_CHINESE_FONT", "Noto Sans CJK SC")
+BILINGUAL_ENGLISH_FONT = env("YT_BILINGUAL_ENGLISH_FONT", "Liberation Sans")
 BILINGUAL_CHINESE_SIZE = max(
     16,
     int(env("YT_BILINGUAL_CHINESE_SIZE", "68") or "68"),
@@ -501,10 +511,8 @@ def _common_yt_dlp_args(
     selected_proxy = PROXY_URL if proxy_url is None else proxy_url
     command = [
         sys.executable,
-        "-m",
-        "yt_dlp",
+        str(COOKIE_SAFE_RUNNER_PATH),
         "--no-color",
-        "--no-warnings",
         "--socket-timeout",
         "30",
         "--retries",
@@ -578,6 +586,22 @@ NETWORK_ERROR_MARKERS = (
 YT_DLP_PROGRESS_PREFIX = "__AMDL_PROGRESS__"
 ProcessObserver = Callable[[subprocess.Popen[str] | None], None]
 ProgressObserver = Callable[[dict[str, Any]], None]
+CancelObserver = Callable[[], bool]
+
+
+def _check_cancelled(observer: CancelObserver | None) -> None:
+    if observer is not None and observer():
+        raise YouTubeIngestError("任务已取消或服务正在停止")
+
+
+def _wait_retry(seconds: float, observer: CancelObserver | None) -> None:
+    deadline = time.monotonic() + seconds
+    while True:
+        _check_cancelled(observer)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.5, remaining))
 
 
 def _notify_process(
@@ -661,23 +685,51 @@ def _is_retryable_youtube_network_error(detail: str) -> bool:
     return any(marker in normalized for marker in NETWORK_ERROR_MARKERS)
 
 
+def _is_youtube_format_availability_error(detail: str) -> bool:
+    normalized = detail.casefold()
+    return any(marker in normalized for marker in (
+        "requested format is not available",
+        "no video formats found",
+        "sabr-only streaming",
+    ))
+
+
 def _is_youtube_auth_error(detail: str) -> bool:
     normalized = detail.casefold()
-    return any(marker in normalized for marker in AUTH_ERROR_MARKERS)
+    return any(marker in normalized for marker in (
+        *AUTH_ERROR_MARKERS,
+        "youtube 要求登录验证，nas cookie 登录链不完整",
+        "youtube 拒绝了当前 nas 登录会话",
+    ))
 
 
-def _refresh_youtube_auth(url: str) -> tuple[bool, str]:
+def _refresh_youtube_auth(
+    url: str, cancel_observer: CancelObserver | None = None,
+) -> tuple[bool, str]:
     if AUTH_AUTO_REFRESH_DISABLED:
         return False, "本次 Cookie 候选校验不允许递归自动刷新"
-    from auth_auto_refresh import refresh_auth
+    from auth_auto_refresh import AuthRefreshCancelled, refresh_auth
 
-    result = refresh_auth("youtube", url)
+    try:
+        result = refresh_auth("youtube", url, cancel_observer=cancel_observer)
+    except AuthRefreshCancelled as exc:
+        raise YouTubeIngestError(str(exc)) from exc
     return result.success, result.detail
 
 
 def _last_error(stderr: str) -> str:
     lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-    return lines[-1] if lines else "未知错误"
+    return _redact_proxy_credentials(lines[-1]) if lines else "未知错误"
+
+
+def _redact_proxy_credentials(value: str) -> str:
+    # Proxy authentication may appear in the command and in upstream errors.
+    # Match URL userinfo only; keep hosts/ports useful for local diagnostics.
+    return re.sub(
+        r"(?i)(\b(?:https?|socks(?:4a?|5h?)?)://)[^\s/]+@",
+        r"\1<redacted>@",
+        value,
+    )
 
 
 def probe_url(
@@ -1101,7 +1153,7 @@ def _download_best_thumbnail(
             return final_path
         except Exception as exc:
             final_path.unlink(missing_ok=True)
-            errors.append(f"{parsed.hostname or 'unknown'}: {exc}")
+            errors.append(_redact_proxy_credentials(f"{parsed.hostname or 'unknown'}: {exc}"))
         finally:
             if raw_path is not None:
                 raw_path.unlink(missing_ok=True)
@@ -1243,10 +1295,10 @@ def _enrich_with_beets(path: Path, log_handle: Any) -> bool:
             env=process_env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log_handle.write(f"beets metadata lookup skipped: {exc}\n")
+        log_handle.write(_redact_proxy_credentials(f"beets metadata lookup skipped: {exc}\n"))
         return False
     if completed.stdout:
-        log_handle.write(completed.stdout)
+        log_handle.write(_redact_proxy_credentials(completed.stdout))
     after = _read_easy_tags(path)
     return bool(after.get("musicbrainz_trackid")) or (
         completed.returncode == 0
@@ -2702,7 +2754,7 @@ def _download_video_subtitles(
                     log_handle.flush()
                     break
                 if completed.stdout:
-                    log_handle.write(completed.stdout)
+                    log_handle.write(_redact_proxy_credentials(completed.stdout))
                 if completed.returncode == 0:
                     log_handle.write(
                         f"subtitles: {label} tracks fetched with "
@@ -2955,13 +3007,15 @@ def _download_once(
     *,
     process_observer: ProcessObserver | None = None,
     progress_observer: ProgressObserver | None = None,
+    cancel_observer: CancelObserver | None = None,
 ) -> DownloadResult:
     if not ENABLED:
         raise YouTubeIngestError("YouTube 下载功能尚未启用")
     if kind not in {"youtube_audio", "youtube_video"}:
         raise ValueError(f"unsupported YouTube job kind: {kind}")
+    _check_cancelled(cancel_observer)
     url = validate_url(url)
-    probe = probe_url(url)
+    probe = probe_url(url, _auto_refresh_attempted=True)
     _notify_progress(
         progress_observer,
         phase="读取媒体信息",
@@ -3029,7 +3083,11 @@ def _download_once(
             clear_partial_files = False
             highest_downloaded = 0
             highest_percent = 0.0
+            completed_quality_cycles = 0
+            download_succeeded = False
+            cycle_failure_details: list[str] = []
             while strategy_index < len(strategies):
+                _check_cancelled(cancel_observer)
                 strategy = strategies[strategy_index]
                 proxy_url = proxy_candidates[proxy_index]
                 attempt_index += 1
@@ -3048,7 +3106,9 @@ def _download_once(
                     proxy_url,
                 )
                 redacted_command = [
-                    "<cookies>" if arg == str(COOKIE_PATH) else arg
+                    "<cookies>"
+                    if arg == str(COOKIE_PATH)
+                    else _redact_proxy_credentials(arg)
                     for arg in command
                 ]
                 log_handle.write(
@@ -3082,6 +3142,7 @@ def _download_once(
                 timer.start()
                 try:
                     for line in process.stdout:
+                        line = _redact_proxy_credentials(line)
                         log_handle.write(line)
                         log_handle.flush()
                         tail.append(line.rstrip())
@@ -3111,6 +3172,7 @@ def _download_once(
                 finally:
                     timer.cancel()
                     _notify_process(process_observer, None)
+                _check_cancelled(cancel_observer)
                 if timed_out.is_set():
                     if process.poll() is None:
                         process.kill()
@@ -3118,6 +3180,7 @@ def _download_once(
                         f"YouTube 下载超过 {DOWNLOAD_TIMEOUT_SECONDS // 60} 分钟，已停止"
                     )
                 if return_code == 0:
+                    download_succeeded = True
                     successful_strategy = strategy
                     log_handle.write(
                         f"auth strategy succeeded: {successful_strategy.name}\n"
@@ -3125,6 +3188,8 @@ def _download_once(
                     break
 
                 detail = "\n".join(list(tail)[-10:]) or "yt-dlp 没有输出错误详情"
+                cycle_failure_details.append(detail)
+                cycle_failure_details = cycle_failure_details[-len(strategies):]
                 if (
                     (network_error_seen or _is_retryable_youtube_network_error(detail))
                     and proxy_index + 1 < len(proxy_candidates)
@@ -3140,7 +3205,7 @@ def _download_once(
                     )
                     log_handle.flush()
                     if AUTH_RETRY_DELAY_SECONDS:
-                        time.sleep(AUTH_RETRY_DELAY_SECONDS)
+                        _wait_retry(AUTH_RETRY_DELAY_SECONDS, cancel_observer)
                     continue
                 if (
                     _is_retryable_youtube_error(detail)
@@ -3155,9 +3220,34 @@ def _download_once(
                     )
                     log_handle.flush()
                     if AUTH_RETRY_DELAY_SECONDS:
-                        time.sleep(AUTH_RETRY_DELAY_SECONDS)
+                        _wait_retry(AUTH_RETRY_DELAY_SECONDS, cancel_observer)
                     continue
                 if _is_retryable_youtube_error(detail):
+                    completed_quality_cycles += 1
+                    if completed_quality_cycles >= HIGH_QUALITY_RETRY_MAX_CYCLES:
+                        log_handle.write(
+                            "highest-quality strategy retry budget exhausted; "
+                            "returning to the browser-cookie recovery handler "
+                            "without lowering quality\n"
+                        )
+                        log_handle.flush()
+                        cycle_detail = "\n".join(cycle_failure_details)
+                        log_handle.write(json.dumps({
+                            "event": "highest_quality_retry_exhausted",
+                            "cycles": completed_quality_cycles,
+                            "strategy_count": len(strategies),
+                            "auth_required": _is_youtube_auth_error(cycle_detail),
+                            "formats_unavailable": _is_youtube_format_availability_error(cycle_detail),
+                            "sabr_limited": "sabr-only streaming" in cycle_detail.casefold(),
+                            "quality_downgraded": False,
+                        }, ensure_ascii=False) + "\n")
+                        log_handle.flush()
+                        raise YouTubeIngestError(
+                            "YouTube 最高画质连续 "
+                            f"{completed_quality_cycles} 轮尝试失败，"
+                            "本次尝试已停止；未降低画质。\n"
+                            f"{cycle_detail}"
+                        )
                     strategy_index = 0
                     proxy_index = 0
                     clear_partial_files = True
@@ -3176,12 +3266,17 @@ def _download_once(
                         speed_bps=None,
                         eta=f"{HIGH_QUALITY_RETRY_DELAY_SECONDS}秒后重试",
                     )
-                    time.sleep(HIGH_QUALITY_RETRY_DELAY_SECONDS)
+                    _wait_retry(HIGH_QUALITY_RETRY_DELAY_SECONDS, cancel_observer)
                     continue
                 raise YouTubeIngestError(
                     f"yt-dlp 下载失败，退出码 {return_code}\n{detail}"
                 )
 
+            if not download_succeeded:
+                raise YouTubeIngestError(
+                    "最高画质下载策略已耗尽，未降低画质。\n"
+                    + "\n".join(cycle_failure_details)
+                )
             _notify_progress(
                 progress_observer,
                 phase="整理媒体与元数据",
@@ -3285,6 +3380,7 @@ def download(
     *,
     process_observer: ProcessObserver | None = None,
     progress_observer: ProgressObserver | None = None,
+    cancel_observer: CancelObserver | None = None,
 ) -> DownloadResult:
     try:
         return _download_once(
@@ -3294,25 +3390,46 @@ def download(
             log_dir,
             process_observer=process_observer,
             progress_observer=progress_observer,
+            cancel_observer=cancel_observer,
         )
     except YouTubeIngestError as exc:
         detail = str(exc)
         if (
             AUTH_AUTO_REFRESH_DISABLED
-            or not _is_youtube_auth_error(detail)
+            or not (
+                _is_youtube_auth_error(detail)
+                or _is_youtube_format_availability_error(detail)
+            )
             or "自动恢复结果" in detail
         ):
             raise
-        refreshed, refresh_detail = _refresh_youtube_auth(validate_url(url))
+        _check_cancelled(cancel_observer)
+        refreshed, refresh_detail = _refresh_youtube_auth(
+            validate_url(url), cancel_observer=cancel_observer,
+        )
         if refreshed:
-            return _download_once(
-                kind,
-                url,
-                job_id,
-                log_dir,
-                process_observer=process_observer,
-                progress_observer=progress_observer,
-            )
+            _check_cancelled(cancel_observer)
+            try:
+                return _download_once(
+                    kind,
+                    url,
+                    job_id,
+                    log_dir,
+                    process_observer=process_observer,
+                    progress_observer=progress_observer,
+                    cancel_observer=cancel_observer,
+                )
+            except YouTubeIngestError as retry_exc:
+                retry_detail = str(retry_exc)
+                diagnosis = (
+                    "检测到 YouTube SABR 格式限制，Cookie 同步不保证恢复高清格式。"
+                    if "sabr-only streaming" in retry_detail.casefold()
+                    else "自动同步后同画质重试仍未成功。"
+                )
+                raise YouTubeIngestError(
+                    f"{retry_detail}\n自动恢复结果：已使用 NAS 浏览器恢复返回的"
+                    f"会话重试；{diagnosis}当前任务结束，后续队列可继续。"
+                ) from retry_exc
         raise YouTubeIngestError(
             f"{detail}\n自动恢复结果：{refresh_detail}"
         ) from exc

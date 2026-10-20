@@ -39,7 +39,7 @@ The default stack includes the bot, wrapper adapter, legacy-wrapper VM and PO to
 
 LX Music and SQ Music use the `lx` / `sq` profiles. The maintenance helper merges their overlays and includes their services in this project's stop/start and backup scope. Follow the [LX / SQ guide](MUSIC_SOURCES.en.md) for initialization, unified routing, read-only authentication mounts and isolated SQ staging.
 
-Run YouTube / Bilibili authentication browsers only when login or cookie refresh is needed, and stop them afterwards. Browser profiles and exported cookies are private data. Before enabling automatic browser management or recovery, review `compose.self-heal.yaml`: Docker socket access gives containers host-level control.
+Run YouTube / Bilibili authentication browsers only when login or cookie refresh is needed, and stop them afterwards. Browser profiles and exported cookies are private data. See the [YouTube guide](YOUTUBE.en.md) for candidate validation, rollback, media and subtitles. On-demand automatic authentication uses `--auth-refresh` and `compose.auth-refresh.yaml`; service watchdogs use `--self-heal`. Both require explicit opt-in, as Docker socket access gives containers host-level control.
 
 ## 3. Acceptance tests
 

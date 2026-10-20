@@ -12,6 +12,7 @@
 - LX Music、SQ Music 适配与可选后端部署；统一单曲入口按 Apple → LX → SQ 尝试同一录音的无损版本。
 - 持久任务状态、媒体库索引与去重、下载进度卡片、失败反馈。
 - YouTube / YouTube Music、哔哩哔哩音频与视频入库，可接入 Navidrome / Emby。
+- YouTube 人工/自动字幕、中文或中文加原语双语 SRT/ASS；持久浏览器会话、Cookie 候选验证、原子更新与回滚。
 - LRC / TTML 歌词、逐字歌词来源匹配、持久队列、重试与通知。
 - wrapper 协议适配、KVM 虚拟机启动支持、按需登录浏览器及限定服务范围的健康恢复。
 - 备份、升级、回滚与故障排查流程。
@@ -74,6 +75,7 @@ python3 -m venv .venv
 - [中文运维手册](docs/OPERATIONS.zh-CN.md) · [Operations guide](docs/OPERATIONS.en.md)
 - [LX / SQ 配置与统一音乐](docs/MUSIC_SOURCES.zh-CN.md) · [English guide](docs/MUSIC_SOURCES.en.md)
 - [LX 后端部署](services/lx-music/README.md) · [SQ 后端部署与任务补丁](services/sq-music/README.md)
+- [YouTube Music、视频、字幕与 Cookie](docs/YOUTUBE.zh-CN.md) · [English guide](docs/YOUTUBE.en.md)
 - [源码与验证范围](docs/SOURCE_SNAPSHOT.md)
 - [敏感信息处理](SECURITY.md)
 - [第三方许可说明](THIRD_PARTY_NOTICES.md)

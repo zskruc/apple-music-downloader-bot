@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 IGNORED = {".git", ".venv", ".venv312", "__pycache__", ".pytest_cache"}
 FORBIDDEN_PARTS = {"state", "legacy-vm-data", "wrapper-data", "backups", "logs", "node_modules"}
 FORBIDDEN_SUFFIXES = {".pem", ".key", ".wvd", ".qcow2", ".img", ".iso", ".sqlite3", ".db", ".log"}
+# This source module handles private Cookie copies; it contains no session data.
+COOKIE_SOURCE_FILES = {Path("bot/yt_dlp_readonly_cookies.py")}
 PATTERNS = {
     "private key": re.compile(r"-----BEGIN (?:OPENSSH |RSA |EC |DSA )?PRIVATE KEY-----"),
     "Telegram token": re.compile(r"(?<![A-Za-z0-9])\d{7,13}:[A-Za-z0-9_-]{30,50}(?![A-Za-z0-9_-])"),
@@ -43,7 +45,7 @@ def main() -> int:
         if (any(part in FORBIDDEN_PARTS for part in relative.parts)
                 or path.suffix in FORBIDDEN_SUFFIXES
                 or (path.name.startswith(".env") and path.name != ".env.example")
-                or "cookies" in path.name.lower()):
+                or ("cookies" in path.name.lower() and relative not in COOKIE_SOURCE_FILES)):
             failures.append((relative, "runtime or credential file"))
             continue
         try:

@@ -64,7 +64,7 @@ def main() -> int:
                     suites.addTests(loader.discover(str(group), pattern="test_*.py"))
                     loader = unittest.TestLoader()
             suites.addTests(loader.discover(str(ROOT / "ops"), pattern="test_*.py"))
-            for name in ("lx-music", "sq-music"):
+            for name in ("lx-music", "sq-music", "youtube"):
                 loader = unittest.TestLoader()
                 suites.addTests(loader.discover(str(ROOT / "services" / name), pattern="test_*.py"))
             result = unittest.TextTestRunner(verbosity=1).run(suites)
