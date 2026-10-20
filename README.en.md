@@ -9,6 +9,7 @@ This repository packages a customized NAS deployment into source code, portable 
 ## Features
 
 - Apple Music text search, paginated selection, song / album / playlist jobs, ALAC and Atmos modes.
+- LX Music and SQ Music adapters and optional backend deployments; unified single-song routing attempts the same recording in Apple → LX → SQ lossless order.
 - Persistent task state, library indexing and deduplication, progress cards and failure reporting.
 - YouTube / YouTube Music and Bilibili audio or video ingestion, with optional Navidrome / Emby integration.
 - LRC / TTML lyrics, word-timed lyric matching, persistent queues, retries and notifications.
@@ -19,7 +20,7 @@ Some features require separate services, model files or account authorization. S
 
 ## Architecture
 
-Telegram / Synology Chat → bot → GAMDL → wrapper adapter → user-authorized wrapper / KVM VM. The bot also dispatches yt-dlp tasks and persistent lyric jobs. Finished files are written to media folders that your media servers can scan. See the diagram in the [Chinese README](README.md#架构).
+Telegram / Synology Chat → bot → GAMDL → wrapper adapter → user-authorized wrapper / KVM VM. Optional LX and SQ backends supply supplementary lossless recordings. The bot also dispatches yt-dlp tasks and persistent lyric jobs. Finished files are written to media folders that your media servers can scan. See the diagram in the [Chinese README](README.md#架构).
 
 ## Before deployment
 
@@ -50,11 +51,13 @@ python3 -m venv .venv
 .venv/bin/python scripts/run_tests.py
 ```
 
-These steps install test dependencies; service dependencies are in `requirements.txt` and the Dockerfile. Tests use synthetic fixtures and temporary directories with Python socket connections blocked. Offline tests do not replace authenticated downloads, VM cold starts, media scanning or power-loss recovery checks. See [SOURCE_SNAPSHOT.md](docs/SOURCE_SNAPSHOT.md) for provenance and validation limits.
+These steps install test dependencies; service dependencies are in `requirements.txt` and the Dockerfile. Tests use synthetic fixtures and temporary directories; Python socket connections are restricted to loopback fixtures, with external addresses blocked. Isolated tests do not replace authenticated downloads, VM cold starts, media scanning or power-loss recovery checks. See [SOURCE_SNAPSHOT.md](docs/SOURCE_SNAPSHOT.md) for provenance and validation limits.
 
 ## Documentation and licensing
 
 - [Operations guide](docs/OPERATIONS.en.md) · [中文运维手册](docs/OPERATIONS.zh-CN.md)
+- [LX / SQ and unified music](docs/MUSIC_SOURCES.en.md) · [中文配置指南](docs/MUSIC_SOURCES.zh-CN.md)
+- [LX backend deployment](services/lx-music/README.md) · [SQ backend and task patch](services/sq-music/README.md)
 - [Source snapshot and verification scope](docs/SOURCE_SNAPSHOT.md)
 - [Sensitive information handling](SECURITY.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)

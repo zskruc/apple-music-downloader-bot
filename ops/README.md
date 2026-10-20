@@ -2,6 +2,8 @@
 
 所有命令在本项目目录使用 `bash ops/stack.sh`。脚本通过 Compose 项目标签和固定服务白名单限制操作；不会扫描或重启其他 NAS 项目，不安装 timer/cron，也不启用任何现有主机守护。
 
+可选 `--profile lx` 与 `--profile sq` 会自动合并 `services/` 下的对应配置。LX/SQ 与主项目共用网络并纳入服务白名单；SQ 应用会在 MySQL 之前停止、在 MySQL 之后恢复。使用与部署相同的 profile 备份，私有快照会包含 LX 数据、SQ 数据库、鉴权文件和叠加配置；不包含公开音乐、SQ 暂存、日志和缓存。先暂停所有入口并确认后端手动队列为空，不能只检查 Bot 队列。完整初始化和验收见 [专项指南](../docs/MUSIC_SOURCES.zh-CN.md)。
+
 ```sh
 bash ops/stack.sh check
 bash ops/stack.sh build
@@ -33,6 +35,8 @@ Docker socket 挂载具有主机管理权限，**不是权限隔离边界**；�
 ## English
 
 Use `bash ops/stack.sh` from this project. Commands are limited to the current Compose project and an explicit service allowlist. No host timer/cron is installed, and no unrelated NAS service is modified.
+
+Optional `--profile lx` / `--profile sq` automatically merge their service overlays. The services share this project's network and maintenance allowlist. SQ stops before MySQL and resumes after it. Backups with the matching profiles include LX private data, the SQ database, credential files and overlay configuration; media, SQ staging, logs and caches are excluded. Pause submissions and verify manual backend queues are idle as well as bot jobs. See the [music source guide](../docs/MUSIC_SOURCES.en.md).
 
 `check` validates without printing expanded secrets. Configured Telegram credentials require a chat allowlist; enabled Synology Chat requires an outgoing token and user allowlist. `probe` reads container status, restart counts, database task counts and the bot health summary. It does not verify account entitlement or a real download.
 

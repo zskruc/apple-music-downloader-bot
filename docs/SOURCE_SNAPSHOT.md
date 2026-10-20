@@ -23,8 +23,11 @@ include configurable host names, accounts and storage paths; synthetic
 network fixtures; portable test imports; and omission of the old optional
 AppleMusicDecrypt runner and vendor tree. Use `AMDL_BACKEND=gamdl`.
 
-The optional SQ / LX integrations require separately configured external
-services. No such service, access token or endpoint is provided. Local macOS
+The optional SQ / LX integrations include backend deployment overlays,
+private initialization helpers and bilingual operations guides in `services/`.
+SQ includes an original exact-version transformation recipe; upstream Java
+sources and binaries are not republished. No access token, personal source
+script or platform session is provided. Local macOS
 alignment support is included as source, but its MLX environment is separate
 from the Linux container and is not configured by the default deployment.
 
@@ -49,7 +52,8 @@ wrapper-manager is AGPL-3.0; see [third-party notices](../THIRD_PARTY_NOTICES.md
 - The maintenance helpers passed **12 mocked contract tests**, including
   profile selection, scoped stopping, private backup, upgrade and rollback.
 - The test runner isolates state in temporary directories, clears production
-  configuration variables and blocks Python socket connections.
+  configuration variables and restricts Python socket connections to loopback
+  test fixtures, blocking external addresses.
 - Python syntax, distributable file types, credential patterns and private
   deployment identifiers were reviewed before publication. Automated matching
   supplements manual review; it is not a guarantee that every possible secret
@@ -85,3 +89,26 @@ its images until the replacement has passed those checks.
 因 NAS 公网 IPv6 不可达，尚未核对线上最终状态；
 本机无 Docker，新的通用模板尚未完成容器构建、账号下载、VM 冷启动和恢复验收。
 这些限制同样在中英文 README 首屏注明。
+
+## LX / SQ supplement, 2026-10-21
+
+The initial publication included the adapters but omitted backend deployment
+and complete credential/storage examples. This supplement adds LXServer
+2.1.2 deployment, SQ 3.1.33 task-bridge preparation, MySQL/NetEase API
+dependencies, private bootstrap helpers, optional Compose profiles and
+configuration tests. Unified routing now skips disabled providers entirely.
+
+The service directories record their fixed upstream revisions and local
+maintenance evidence. LXServer's Apache-2.0 license is retained. No license
+grant was found in the locally audited SQ commit; its upstream source is not
+included or relicensed. New public files contain recipes and synthetic tests,
+not authenticated runtime data. Live backend builds and downloads remain
+unverified during this publication work.
+
+The supplemented repository passed **500 isolated tests** under Python 3.12,
+including provider-disable boundaries, shared-volume/network contracts,
+credential initialization, exact-patch rejection and maintenance ordering.
+The four Compose files passed the official schema check. Python socket access
+in the test runner is limited to local loopback fixtures; external addresses
+are blocked. SQ database/root/JWT secrets from the shared `.env` are explicitly
+removed from bot and lyric-worker environments.

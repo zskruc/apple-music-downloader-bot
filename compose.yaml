@@ -23,6 +23,10 @@ x-worker: &worker
   logging: *log
 
 x-lyrics-env: &lyrics-env
+  # The root .env is shared for interpolation; bot/lyric processes need no DB admin secrets.
+  SQ_DB_PASSWORD: ""
+  SQ_DB_ROOT_PASSWORD: ""
+  SQ_JWT_SECRET: ""
   AMDL_STATE_DIR: /state
   AMDL_WORD_LYRICS_STATE_DIR: /state/word-lyrics
   AMDL_LIBRARY_ROOT: /music

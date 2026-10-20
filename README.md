@@ -9,6 +9,7 @@
 ## 功能
 
 - Apple Music 文字搜索、分页选择、单曲 / 专辑 / 歌单任务，ALAC 与 Atmos 模式。
+- LX Music、SQ Music 适配与可选后端部署；统一单曲入口按 Apple → LX → SQ 尝试同一录音的无损版本。
 - 持久任务状态、媒体库索引与去重、下载进度卡片、失败反馈。
 - YouTube / YouTube Music、哔哩哔哩音频与视频入库，可接入 Navidrome / Emby。
 - LRC / TTML 歌词、逐字歌词来源匹配、持久队列、重试与通知。
@@ -22,7 +23,8 @@
 ```mermaid
 flowchart TD
     T[Telegram / Synology Chat] --> B[Bot / 持久任务状态]
-    B --> G[GAMDL]
+    B --> U[统一音乐 / Apple → LX → SQ]
+    U --> G[GAMDL]
     G --> A[wrapper 协议适配器]
     A --> V[用户授权的 wrapper / KVM VM]
     B --> Y[yt-dlp / PO token provider]
@@ -30,6 +32,10 @@ flowchart TD
     B --> M[媒体目录 / Navidrome / Emby]
     Y --> M
     L --> M
+    U --> X[LX Music 后端]
+    U --> Q[SQ Music 后端 / 隔离暂存]
+    X --> M
+    Q --> M
 ```
 
 ## 部署前
@@ -61,11 +67,13 @@ python3 -m venv .venv
 .venv/bin/python scripts/run_tests.py
 ```
 
-上述步骤安装测试依赖；实际服务依赖见 `requirements.txt` 与 Dockerfile。测试使用合成数据与临时目录，并禁止通过 Python socket 联网。离线单元测试不能替代有效账号下载、VM 冷启动、媒体扫描和断电恢复验收。验证结果与来源说明见 [SOURCE_SNAPSHOT.md](docs/SOURCE_SNAPSHOT.md)。
+上述步骤安装测试依赖；实际服务依赖见 `requirements.txt` 与 Dockerfile。测试使用合成数据与临时目录，Python socket 仅允许回环测试服务，禁止连接外部地址。隔离测试不能替代有效账号下载、VM 冷启动、媒体扫描和断电恢复验收。验证结果与来源说明见 [SOURCE_SNAPSHOT.md](docs/SOURCE_SNAPSHOT.md)。
 
 ## 文档与许可
 
 - [中文运维手册](docs/OPERATIONS.zh-CN.md) · [Operations guide](docs/OPERATIONS.en.md)
+- [LX / SQ 配置与统一音乐](docs/MUSIC_SOURCES.zh-CN.md) · [English guide](docs/MUSIC_SOURCES.en.md)
+- [LX 后端部署](services/lx-music/README.md) · [SQ 后端部署与任务补丁](services/sq-music/README.md)
 - [源码与验证范围](docs/SOURCE_SNAPSHOT.md)
 - [敏感信息处理](SECURITY.md)
 - [第三方许可说明](THIRD_PARTY_NOTICES.md)

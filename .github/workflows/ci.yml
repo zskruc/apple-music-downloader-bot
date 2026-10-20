@@ -18,8 +18,15 @@ jobs:
       - run: python scripts/check_repo.py
       - run: python scripts/run_tests.py
       - name: Validate deployment templates
+        env:
+          SQ_DB_PASSWORD: ci-config-only
+          SQ_DB_ROOT_PASSWORD: ci-config-only-root
+          SQ_JWT_SECRET: ci-config-only-jwt
         run: |
           cp .env.example .env
           docker compose config --quiet
           docker compose -f compose.yaml -f compose.self-heal.yaml --profile self-heal config --quiet
+          docker compose -f compose.yaml -f services/lx-music/compose.yaml --profile lx config --quiet
+          docker compose -f compose.yaml -f services/sq-music/compose.yaml --profile sq config --quiet
+          docker compose -f compose.yaml -f services/lx-music/compose.yaml -f services/sq-music/compose.yaml -f compose.self-heal.yaml --profile lx --profile sq --profile self-heal config --quiet
           for script in ops/stack.sh vm/*.sh; do bash -n "$script"; done

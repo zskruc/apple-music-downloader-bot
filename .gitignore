@@ -18,6 +18,7 @@ backups/
 logs/
 runtime/
 .ops/
+secrets/
 *.log
 *.sqlite*
 *.db

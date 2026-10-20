@@ -66,3 +66,23 @@ in this repository. AppleMusicDecrypt has a separate
 [AGPL-3.0 license](https://github.com/WorldObservationLog/AppleMusicDecrypt/blob/master/LICENSE.txt).
 Device credentials, DRM device blobs, authentication cookies, private keys,
 account sessions, music, videos, and downloaded lyrics are excluded.
+
+## Optional LX / SQ backends
+
+[LXServer](https://github.com/XCQ0607/lxserver), version 2.1.2 at commit
+`9006e61d73f15764b8eb1388efbd55d8d3271370`, is an independent Apache-2.0
+service. Its [license](services/lx-music/LICENSE.upstream.txt) and pinned
+image/source metadata are retained in the service directory. Its sources are
+not vendored, and personal music-source scripts are not included.
+
+[SQ Music Plus](https://github.com/59799517/simple_sq_music_plus) is referenced
+at version 3.1.33, commit `cf0f6ed136be0aa13845bbab028c27e404b89d5d`.
+No license file or grant was found in the locally audited source snapshot.
+This repository includes an original transformation recipe and build/config
+instructions, without redistributing the upstream Java tree or binaries.
+The repository's MIT license does not grant rights over that upstream work.
+See [SQ sources and boundaries](services/sq-music/SOURCES.md).
+
+MySQL and the NetEase API service images retain their publishers' licensing.
+Image contents are not included in this repository. Review the exact selected
+images and corresponding source notices before distributing a built bundle.

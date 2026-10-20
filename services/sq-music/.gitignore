@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+patched/
+upstream/
+runtime/
+staging/
+mysql_data/
+secrets/
+__pycache__/

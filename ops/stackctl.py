@@ -21,18 +21,43 @@ SERVICES = frozenset({
     'word-lyrics-resolver', 'word-lyrics-nas-aligner',
     'youtube-auth-browser', 'bilibili-auth-browser',
     'wrapper-watchdog', 'bot-watchdog',
+    'lxserver', 'sqmusic-server', 'sq-mysql', 'sq-neteasecloudmusicapi',
 })
-PRIVATE_TARGETS = {'/state', '/session', '/data', '/config'}
+PROFILE_FILES = {
+    'lx': 'services/lx-music/compose.yaml',
+    'sq': 'services/sq-music/compose.yaml',
+}
+PROFILE_SERVICES = {
+    'auth': ['youtube-auth-browser', 'bilibili-auth-browser'],
+    'lyrics': ['word-lyrics-resolver', 'word-lyrics-nas-aligner'],
+    'lx': ['lxserver'],
+    'sq': ['sq-mysql', 'sq-neteasecloudmusicapi', 'sqmusic-server'],
+}
+PRIVATE_TARGETS = {'/state', '/session', '/data', '/config', '/server/data', '/var/lib/mysql',
+                   '/run/secrets/lx-frontend-auth', '/run/secrets/sq-auth.json'}
 WRITERS = {'bot', 'wrapper', 'legacy-wrapper', 'word-lyrics-resolver',
            'word-lyrics-nas-aligner', 'youtube-auth-browser', 'bilibili-auth-browser'}
 STOP_ORDER = {'wrapper-watchdog': 0, 'bot-watchdog': 0, 'bot': 1,
               'word-lyrics-resolver': 2, 'word-lyrics-nas-aligner': 2,
               'youtube-auth-browser': 3, 'bilibili-auth-browser': 3,
-              'wrapper': 4, 'youtube-pot': 5, 'legacy-wrapper': 6}
+              'wrapper': 4, 'youtube-pot': 5, 'legacy-wrapper': 6,
+              'lxserver': 4, 'sqmusic-server': 4, 'sq-neteasecloudmusicapi': 5, 'sq-mysql': 6}
 
 
 def stop_order(services: list[str]) -> list[str]:
     return sorted(services, key=lambda service: (STOP_ORDER[service], service))
+
+
+def compose_base(args: argparse.Namespace) -> list[str]:
+    command = ['docker', 'compose', '--project-directory', str(ROOT),
+               '--env-file', str(ROOT / '.env'), '-f', str(ROOT / 'compose.yaml')]
+    if args.self_heal:
+        command += ['-f', str(ROOT / 'compose.self-heal.yaml'), '--profile', 'self-heal']
+    for profile in dict.fromkeys(args.profile):
+        if profile in PROFILE_FILES:
+            command += ['-f', str(ROOT / PROFILE_FILES[profile])]
+        command += ['--profile', profile]
+    return command
 
 
 def run(args: list[str], *, capture: bool = False) -> str:
@@ -52,12 +77,7 @@ def write_json(path: Path, payload: object) -> None:
 class Stack:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
-        self.base = ['docker', 'compose', '--project-directory', str(ROOT),
-                     '--env-file', str(ROOT / '.env'), '-f', str(ROOT / 'compose.yaml')]
-        if args.self_heal:
-            self.base += ['-f', str(ROOT / 'compose.self-heal.yaml'), '--profile', 'self-heal']
-        for profile in args.profile:
-            self.base += ['--profile', profile]
+        self.base = compose_base(args)
         # config is deliberately captured: it contains expanded secret values.
         self.config = json.loads(run(self.base + ['config', '--format', 'json'], capture=True))
         self.project = self.config['name']
@@ -105,15 +125,16 @@ class Stack:
     def selected(self, names: list[str], *, default: bool = True) -> list[str]:
         if not names and default:
             names = ['legacy-wrapper', 'wrapper', 'youtube-pot', 'bot']
-            if 'lyrics' in self.args.profile:
-                names += ['word-lyrics-resolver', 'word-lyrics-nas-aligner']
-            if 'auth' in self.args.profile:
-                names += ['youtube-auth-browser', 'bilibili-auth-browser']
+            for profile in dict.fromkeys(self.args.profile):
+                names += PROFILE_SERVICES[profile]
             if self.args.self_heal:
                 names += ['wrapper-watchdog', 'bot-watchdog']
         unknown = set(names) - SERVICES
         if unknown:
             raise RuntimeError('Unsupported service: ' + ', '.join(sorted(unknown)))
+        for profile in PROFILE_FILES:
+            if set(names).intersection(PROFILE_SERVICES[profile]) and profile not in self.args.profile:
+                raise RuntimeError('Include --profile ' + profile + ' when managing its music services')
         return names
 
     def inventory(self) -> dict[str, dict]:
@@ -209,11 +230,16 @@ class Stack:
                 self.compose('stop', '--timeout', '90', service)
             # Catch a job accepted between the first idle check and container stop.
             self.require_idle()
-            for filename in ('.env', 'compose.yaml', 'compose.self-heal.yaml'):
+            filenames = ['.env', 'compose.yaml', 'compose.self-heal.yaml']
+            filenames += [PROFILE_FILES[profile] for profile in dict.fromkeys(self.args.profile)
+                          if profile in PROFILE_FILES]
+            for filename in filenames:
                 source = ROOT / filename
                 if source.exists():
-                    shutil.copyfile(source, destination / filename)
-                    (destination / filename).chmod(0o600)
+                    target = destination / filename
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    shutil.copyfile(source, target)
+                    target.chmod(0o600)
             if self.active.exists():
                 shutil.copyfile(self.active, destination / 'images.compose.json')
                 (destination / 'images.compose.json').chmod(0o600)
@@ -290,7 +316,7 @@ class Stack:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--self-heal', action='store_true', help='include the explicit Docker socket override')
-    parser.add_argument('--profile', action='append', choices=['auth', 'lyrics'], default=[])
+    parser.add_argument('--profile', action='append', choices=sorted(PROFILE_SERVICES), default=[])
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ['check', 'status', 'probe']:
         commands.add_parser(name)

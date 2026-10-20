@@ -1,0 +1,14 @@
+{
+  "project": "LXServer",
+  "repository": "https://github.com/XCQ0607/lxserver",
+  "tag": "v2.1.2",
+  "commit": "9006e61d73f15764b8eb1388efbd55d8d3271370",
+  "license": "Apache-2.0",
+  "license_url": "https://github.com/XCQ0607/lxserver/blob/9006e61d73f15764b8eb1388efbd55d8d3271370/LICENSE",
+  "image": "ghcr.io/xcq0607/lxserver@sha256:aa3db966049584585639ca6563e85ce5b7ebf33569dd1f5064c21bd7330382af",
+  "deployment_record_date": "2026-10-19",
+  "source_reference_checked_on": "2026-10-21",
+  "local_server_source_patches": [],
+  "integration_source": "../../bot/lx_fallback.py",
+  "note": "The image digest and runtime version are from the retained deployment verification record. This publication did not reconnect to the NAS or perform a fresh deployment. Upstream server source and image layers are external."
+}

@@ -2785,7 +2785,7 @@ def process_unified_music_job(job: Job) -> None:
         else:
             errors.append("Apple Music 未找到严格匹配的同一录音")
 
-        if not paths:
+        if not paths and LX_FALLBACK_ENABLED:
             assert target is not None
             unified_download_phase(job, "Apple Music 缺曲，尝试 LX 无损")
             fallback = run_lx_fallback(job, job, "alac", 66, Path("/nonexistent"), [],
@@ -2795,11 +2795,11 @@ def process_unified_music_job(job: Job) -> None:
                 provider, phase = "LX", "LX 无损入库完成"
             else:
                 errors.append("LX 未取得通过验收的无损音频")
-        if not paths:
+        if not paths and SQ_MUSIC_ENABLED:
             assert target is not None
             if not wait_for_task_ready(job):
                 raise LxFallbackStopped("parent stopped before SQ")
-            unified_download_phase(job, "LX 无损未完成，尝试 SQ 无损")
+            unified_download_phase(job, "尝试 SQ 无损")
             client = sq_music_client()
             candidates = unified_sq_candidates(client, target)
             if not candidates:
@@ -2825,7 +2825,7 @@ def process_unified_music_job(job: Job) -> None:
             if not paths:
                 raise RuntimeError(f"SQ {len(candidates)} 个无损候选均未通过下载验收")
         if not paths:
-            raise RuntimeError("三个来源均未取得通过验收的无损音频")
+            raise RuntimeError("已启用的来源均未取得通过验收的无损音频")
         # Record ownership before lyrics/scan so restart and stop retain safe deletion.
         delete_paths = unified_owned_deletion_paths(job, paths, created)
         task_card_store.update(job.task_id, local_paths_json=json.dumps(unique_path_strings(paths), ensure_ascii=False),

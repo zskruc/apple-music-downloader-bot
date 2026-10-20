@@ -37,6 +37,8 @@ bash ops/stack.sh probe
 
 The default stack includes the bot, wrapper adapter, legacy-wrapper VM and PO token provider. Authentication browsers use the `auth` profile; lyric services use the `lyrics` profile. Acoustic alignment additionally needs a whisper.cpp executable and models matching the configured hashes. Model weights are not included. Review the corresponding environment variables and mounts.
 
+LX Music and SQ Music use the `lx` / `sq` profiles. The maintenance helper merges their overlays and includes their services in this project's stop/start and backup scope. Follow the [LX / SQ guide](MUSIC_SOURCES.en.md) for initialization, unified routing, read-only authentication mounts and isolated SQ staging.
+
 Run YouTube / Bilibili authentication browsers only when login or cookie refresh is needed, and stop them afterwards. Browser profiles and exported cookies are private data. Before enabling automatic browser management or recovery, review `compose.self-heal.yaml`: Docker socket access gives containers host-level control.
 
 ## 3. Acceptance tests

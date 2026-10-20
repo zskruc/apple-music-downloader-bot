@@ -16,6 +16,12 @@ needed. Configure a Telegram chat allowlist before starting a public bot.
 Backups contain secrets and require restricted permissions and separate secure
 storage. Do not upload them with the public repository.
 
+The LX / SQ overlays mount private authentication files read-only and keep
+management ports on loopback. SQ staging must stay outside the published music
+library and outside database/credential directories. Initialization helpers
+are intended for a new private deployment; preserve matching existing secrets
+and databases when migrating.
+
 If a credential is exposed, revoke or rotate it at its issuer before cleaning
 the repository history. Deleting the visible file does not invalidate a leaked
 credential. Report a vulnerability privately through the maintainer's GitHub

@@ -379,6 +379,7 @@ class UnifiedDownloadScheduling(unittest.TestCase):
             validate_recording_duration=lambda recording, info: None,
             read_apple_failure_text=lambda logfile, tail: self.failure,
             fallback_is_eligible=fallback_is_eligible,
+            LX_FALLBACK_ENABLED=True, SQ_MUSIC_ENABLED=True,
             LX_FALLBACK_ALLOW_CATALOG_API_3076=True,
             ALAC_OUTPUT_PATH=self.root, run_lx_fallback=self.lx_download,
             SQ_MUSIC_SOURCES=("kw", "netease", "qqvip"),
@@ -430,6 +431,35 @@ class UnifiedDownloadScheduling(unittest.TestCase):
         completion = self.ns["complete_task_card"].call_args.kwargs
         self.assertEqual(json.loads(completion["local_paths_json"]), [str(self.sq_path)])
         self.assertEqual(json.loads(completion["delete_paths_json"]), [str(self.sq_path)])
+
+    def test_disabled_lx_is_skipped_before_sq_download(self):
+        self.ns["LX_FALLBACK_ENABLED"] = False
+        self.ns["process_unified_music_job"](self.job)
+        self.assertEqual(self.events, ["apple", "sq-match", "sq-download"])
+        self.ns["complete_task_card"].assert_called_once()
+
+    def test_disabled_sq_does_not_initialize_auth_after_lx_failure(self):
+        self.ns["SQ_MUSIC_ENABLED"] = False
+        client = Mock(side_effect=AssertionError("disabled SQ must not read its credentials"))
+        self.ns["sq_music_client"] = client
+        self.ns["process_unified_music_job"](self.job)
+        self.assertEqual(self.events, ["apple", "lx"])
+        client.assert_not_called()
+        self.ns["complete_task_card"].assert_not_called()
+        failure = self.ns["update_task_card"].call_args.kwargs
+        self.assertEqual(failure["status"], "failed")
+        self.assertIn("已启用的来源", failure["error"])
+
+    def test_both_optional_sources_disabled_only_attempts_apple(self):
+        self.ns.update(LX_FALLBACK_ENABLED=False, SQ_MUSIC_ENABLED=False)
+        self.ns["process_unified_music_job"](self.job)
+        self.assertEqual(self.events, ["apple"])
+        self.ns["complete_task_card"].assert_not_called()
+        failure = self.ns["update_task_card"].call_args.kwargs
+        self.assertEqual(failure["status"], "failed")
+        self.assertIn("已启用的来源", failure["error"])
+        self.assertNotIn("LX", failure["error"])
+        self.assertNotIn("SQ", failure["error"])
 
     def test_sq_failed_source_continues_next_source_at_highest_lossless_tier(self):
         netease = SimpleNamespace(**{**vars(self.sq), "source": "netease", "song_id": "n1", "quality": "netease_flac_3000"})

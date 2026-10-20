@@ -37,6 +37,8 @@ bash ops/stack.sh probe
 
 默认栈包含 bot、wrapper adapter、legacy-wrapper VM、PO token provider。登录浏览器使用 `auth` profile，歌词服务使用 `lyrics` profile。逐字声学对齐另需 whisper.cpp 可执行文件及匹配校验值的模型；只有模型文件名相同不代表模型已准备好。参阅 Compose 中相应环境变量和挂载，不要假定源码仓库包含模型。
 
+LX Music 和 SQ Music 使用 `lx` / `sq` profile。运维脚本会合并对应后端配置，并纳入同一项目的启停与备份范围。首次初始化、统一入口开关、只读鉴权和 SQ 暂存隔离见 [LX / SQ 专项指南](MUSIC_SOURCES.zh-CN.md)。
+
 YouTube / 哔哩哔哩的登录浏览器只在登录和 Cookie 刷新时启动，完成后停止。浏览器配置与导出的 Cookie 均为私有数据。启用自动浏览器管理或自愈前，阅读 `compose.self-heal.yaml`；Docker socket 可赋予容器宿主级控制权。
 
 ## 3. 验收清单

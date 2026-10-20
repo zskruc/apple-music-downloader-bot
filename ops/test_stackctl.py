@@ -2,6 +2,7 @@
 import argparse
 import importlib.util
 import json
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,8 +24,55 @@ class MaintenanceContracts(unittest.TestCase):
         return stack
 
     def test_profiles_expand_default_service_set(self):
-        stack = self.stack(profiles=['lyrics', 'auth'], heal=True)
+        stack = self.stack(profiles=['lyrics', 'auth', 'lx', 'sq'], heal=True)
         self.assertEqual(set(stack.selected([])), module.SERVICES)
+
+    def test_optional_profiles_add_their_configuration_once(self):
+        args = argparse.Namespace(profile=['sq', 'lx', 'sq'], self_heal=False)
+        command = module.compose_base(args)
+        for filename in module.PROFILE_FILES.values():
+            self.assertEqual(command.count(str(module.ROOT / filename)), 1)
+        self.assertNotIn(str(module.ROOT / 'compose.self-heal.yaml'), command)
+
+    def test_backend_mutations_require_the_matching_overlay(self):
+        with self.assertRaisesRegex(RuntimeError, '--profile sq'):
+            self.stack().selected(['sqmusic-server'])
+        self.assertEqual(self.stack(profiles=['sq']).selected(['sqmusic-server']), ['sqmusic-server'])
+
+    def test_music_backends_stop_before_their_database_and_after_the_bot(self):
+        order = module.stop_order(['sq-mysql', 'sqmusic-server', 'bot', 'lxserver', 'bot-watchdog'])
+        self.assertLess(order.index('bot-watchdog'), order.index('bot'))
+        self.assertLess(order.index('bot'), order.index('lxserver'))
+        self.assertLess(order.index('bot'), order.index('sqmusic-server'))
+        self.assertLess(order.index('sqmusic-server'), order.index('sq-mysql'))
+
+    def test_private_music_configuration_is_backed_up_without_staged_media(self):
+        stack = self.stack(profiles=['lx', 'sq'])
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            mysql = root / 'mysql'
+            mysql.mkdir()
+            (mysql / 'state').write_text('synthetic database')
+            auth = root / 'auth'
+            auth.write_text('synthetic credential fixture')
+            staged = root / 'staging'
+            staged.mkdir()
+            (staged / 'media').write_text('synthetic staged media')
+            stack.config['services'].update({
+                'lxserver': {'volumes': [{'type': 'bind', 'source': str(auth),
+                                         'target': '/run/secrets/lx-frontend-auth'}]},
+                'sq-mysql': {'volumes': [{'type': 'bind', 'source': str(mysql), 'target': '/var/lib/mysql'}]},
+                'sqmusic-server': {'volumes': [{'type': 'bind', 'source': str(staged), 'target': '/music'}]},
+            })
+            stack.active = root / 'missing-override'
+            with patch.object(stack, 'inventory', return_value={}), patch.object(stack, 'require_idle'):
+                manifest = stack.backup(root / 'backup')
+            self.assertEqual(set(manifest['mounts']), {str(auth.resolve()), str(mysql.resolve())})
+            with tarfile.open(root / 'backup/private-data.tar') as archive:
+                content = [archive.extractfile(name).read() for name in archive.getmembers() if name.isfile()]
+            self.assertIn(b'synthetic credential fixture', content)
+            self.assertIn(b'synthetic database', content)
+            self.assertNotIn(b'synthetic staged media', content)
 
     def test_unknown_service_is_rejected(self):
         with self.assertRaises(RuntimeError):

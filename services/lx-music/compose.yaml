@@ -1,0 +1,74 @@
+# Overlay from the repository root; see README.md before the first start.
+services:
+  bot:
+    environment:
+      AMDL_LX_FALLBACK_ENABLED: "true"
+      AMDL_LX_FALLBACK_BASE_URL: http://lxserver:9527
+      AMDL_LX_FALLBACK_AUTH_FILE: /run/secrets/lx-frontend-auth
+      AMDL_LX_FALLBACK_OUTPUT_PATH: /music/LX Music
+      AMDL_LX_FALLBACK_SERVER_MUSIC_ROOT: /server/music/_open
+    volumes:
+      - type: bind
+        source: ${LX_FRONTEND_AUTH_PATH:-./secrets/lx-frontend-auth}
+        target: /run/secrets/lx-frontend-auth
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      lxserver:
+        condition: service_healthy
+
+  lxserver:
+    profiles: [lx]
+    image: ${LX_IMAGE:-ghcr.io/xcq0607/lxserver@sha256:aa3db966049584585639ca6563e85ce5b7ebf33569dd1f5064c21bd7330382af}
+    restart: unless-stopped
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 512m
+    environment:
+      NODE_ENV: production
+      PORT: "9527"
+      BIND_IP: 0.0.0.0
+      DATA_PATH: /server/data
+      LOG_PATH: /server/logs
+      CONFIG_PATH: /server/data/config.js
+      ENABLE_WEBPLAYER_AUTH: "true"
+      DISABLE_TELEMETRY: "true"
+      ENABLE_PUBLIC_USER_RESTRICTION: "true"
+      ENABLE_PUBLIC_FAVORITES: "false"
+      ENABLE_PUBLIC_NON_ADMIN_ACCESS: "false"
+      ENABLE_PUBLIC_NON_ADMIN_LOCAL_MUSIC: "false"
+      ENABLE_PUBLIC_NON_ADMIN_SERVER_CACHE: "false"
+      ENABLE_PUBLIC_NON_ADMIN_BROWSER_DOWNLOAD: "false"
+      SUBSONIC_ENABLE: "false"
+    ports:
+      - "127.0.0.1:${LX_HOST_PORT:-19527}:9527"
+    volumes:
+      - ${LX_DATA_PATH:-./runtime/lx-music}/data:/server/data
+      - ${LX_DATA_PATH:-./runtime/lx-music}/logs:/server/logs
+      - ${LX_DATA_PATH:-./runtime/lx-music}/cache:/server/cache
+      - ${LX_DATA_PATH:-./runtime/lx-music}/cover_cache:/server/cover_cache
+      - "${MUSIC_PATH:-./runtime/music}/LX Music:/server/music/_open"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:9527/api/music/config',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 120s
+    networks:
+      default:
+        aliases: [lxserver-test]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

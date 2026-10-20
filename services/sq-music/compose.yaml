@@ -1,0 +1,106 @@
+services:
+  bot:
+    environment:
+      AMDL_UNIFIED_MUSIC_ENABLED: ${AMDL_UNIFIED_MUSIC_ENABLED:-false}
+      AMDL_SQ_MUSIC_ENABLED: "true"
+      AMDL_SQ_MUSIC_BASE_URL: http://sqmusic-server:8099
+      AMDL_SQ_AUTH_FILE: /run/secrets/sq-auth.json
+      AMDL_SQ_MUSIC_STAGING_PATH: /sq-staging
+      AMDL_SQ_MUSIC_SERVER_ROOT: /music
+      AMDL_SQ_MUSIC_OUTPUT_PATH: /music/SQ Music
+      AMDL_SQ_MUSIC_SOURCES: ${AMDL_SQ_MUSIC_SOURCES:-netease}
+    volumes:
+      - type: bind
+        source: ${SQ_STAGING_PATH:?Set the absolute SQ staging directory}
+        target: /sq-staging
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${SQ_AUTH_PATH:?Set the absolute private SQ auth JSON path}
+        target: /run/secrets/sq-auth.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      sqmusic-server:
+        condition: service_started
+
+  sqmusic-server:
+    profiles: [sq]
+    image: ${SQ_PATCHED_IMAGE:?Build and pin the audited SQ bot-bridge image}
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      DB_IP: sq-mysql
+      DB_PORT: "3306"
+      DB_NAME: sqmusicv3
+      DB_USERNAME: sqmusic
+      DB_PASSWORD: ${SQ_DB_PASSWORD:?Set a unique database password}
+      JWT_SECRET: ${SQ_JWT_SECRET:?Set a random JWT secret of at least 64 characters}
+      MCP_ENABLED: "false"
+      MCP_STDIO_ENABLED: "false"
+      JAVA_TOOL_OPTIONS: "-Xms128m -Xmx640m -XX:+UseG1GC"
+    volumes:
+      - type: bind
+        source: ${SQ_STAGING_PATH:?Set the absolute SQ staging directory}
+        target: /music
+        bind:
+          create_host_path: false
+    # Local management only. Do not publish this port to the Internet.
+    ports:
+      - "127.0.0.1:${SQ_HOST_PORT:-18099}:8099"
+    depends_on:
+      sq-mysql:
+        condition: service_healthy
+      sq-neteasecloudmusicapi:
+        condition: service_started
+    mem_limit: 1100m
+    pids_limit: 384
+    restart: unless-stopped
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  sq-mysql:
+    profiles: [sq]
+    image: ${SQ_MYSQL_IMAGE:?Set the audited MySQL 5.7 image digest}
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      MYSQL_ROOT_PASSWORD: ${SQ_DB_ROOT_PASSWORD:?Set a separate database root password}
+      MYSQL_DATABASE: sqmusicv3
+      MYSQL_USER: sqmusic
+      MYSQL_PASSWORD: ${SQ_DB_PASSWORD:?Set a unique database password}
+    command:
+      - --innodb-buffer-pool-size=128M
+      - --max-connections=30
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - type: bind
+        source: ${SQ_MYSQL_DATA_PATH:?Set the absolute SQ MySQL data directory}
+        target: /var/lib/mysql
+        bind:
+          create_host_path: false
+    mem_limit: 600m
+    pids_limit: 256
+    healthcheck:
+      test: [CMD-SHELL, "mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    logging: *logging
+
+  sq-neteasecloudmusicapi:
+    profiles: [sq]
+    image: ${SQ_NETEASE_IMAGE:?Set the audited NetEase API v4.32.0 image digest}
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    mem_limit: 300m
+    pids_limit: 128
+    restart: unless-stopped
+    logging: *logging

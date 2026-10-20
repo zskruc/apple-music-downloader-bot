@@ -1,0 +1,14 @@
+# Sources, provenance, and licensing
+
+| Component | Audited source/version | Publication treatment |
+| --- | --- | --- |
+| SQ backend | [simple_sq_music_plus commit cf0f6ed](https://github.com/59799517/simple_sq_music_plus/tree/cf0f6ed136be0aa13845bbab028c27e404b89d5d), `3.1.33` | Reference only. No license file or license declaration was found in the locally audited tree/README/pom at this commit. Do not assume MIT or permission to redistribute. |
+| SQ base image | [Official release workflow](https://github.com/59799517/simple_sq_music_plus/blob/cf0f6ed136be0aa13845bbab028c27e404b89d5d/.github/workflows/build-and-release.yml), GHCR `v3.1.33`, multi-architecture digest `sha256:4f3e499c07da526bea5648fc4e1b9c449e363356c5e8c1ef4d96c2d67b1e20f2` | Pulled locally by the operator; image/layers are not published here. |
+| NetEase API | [SQ upstream Compose](https://github.com/59799517/simple_sq_music_plus/blob/cf0f6ed136be0aa13845bbab028c27e404b89d5d/docker-compose.yml), `registry.cn-hangzhou.aliyuncs.com/sqdockler/netease_cloud_music_api:v4.32.0`, audited digest `sha256:87e4c7bf459da928309fd3c8840142f0f005b6a0f8812f5360acb3eac1e8553c` | External image reference only; its own upstream terms apply. No source bundled or relicensed. |
+| MySQL | [SQ upstream Compose](https://github.com/59799517/simple_sq_music_plus/blob/cf0f6ed136be0aa13845bbab028c27e404b89d5d/docker-compose.yml), `5.7` baseline | Operator supplies a verified image digest. No image bundled or relicensed; no in-place major migration. |
+| Bot bridge patch | Original `prepare_build.py`, initially prepared/validated 2026-10-17, bridge contract `1` | MIT covers this repository's original transformation logic and added bridge code. Source fragments used as exact matching anchors do not relicense the upstream files. Generated derivative Java files stay local and ignored. |
+| Portable deployment/operations | This directory's Compose, Dockerfile wrapper, SQL configuration, bootstrap helper, and bilingual documentation | Original configuration and documentation under this repository's MIT license. No runtime credentials, account sessions, private endpoint overrides, media, databases, or operator logs are included. |
+
+The two upstream file hashes are embedded in `prepare_build.py`. Their precise byte identity is required before any transformation; the image's `application.yml` must declare `3.1.33` before compilation. The patch needs the official image's expanded `/app/BOOT-INF` layout and JDK 21. A matching version label alone does not authorize applying the patch to another tree or repackaged image.
+
+The audit used an existing local checkout of the exact commit and local deployment/acceptance records dated 2026-10-17 and 2026-10-20. Live GitHub fetches during this update were unavailable; license status is stated only for the audited revision. No current-upstream or new-deployment validation is claimed.
