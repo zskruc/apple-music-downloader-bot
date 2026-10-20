@@ -23,7 +23,6 @@ services:
     image: ${LX_IMAGE:-ghcr.io/xcq0607/lxserver@sha256:aa3db966049584585639ca6563e85ce5b7ebf33569dd1f5064c21bd7330382af}
     restart: unless-stopped
     init: true
-    cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 256
     mem_limit: 512m
