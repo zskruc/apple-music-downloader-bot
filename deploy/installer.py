@@ -614,7 +614,25 @@ class Installer:
                            "managed_paths": {key: values[key] for key in self.managed_paths()},
                            "media_paths": [values[key] for key in self.managed_paths() if "MUSIC_PATH" in key or "VIDEO_PATH" in key]}
         atomic_json(self.descriptor_file, self.descriptor)
+        # Configuration reruns on every resume, while credentials may already
+        # be checkpointed. Prepare newly required mount roots in either case.
+        self.prepare_navidrome_music_root(values)
         self.compose("config", "--quiet", label="compose-validation", timeout=60)
+
+    def prepare_navidrome_music_root(self, values):
+        if not self.media:
+            return
+        state = Path(values["NAVIDROME_DATA_PATH"])
+        parent = state / "music-root"
+        paths = [state, parent] + [parent / name for name in ("apple", "youtube", "bilibili")]
+        uid, gid = int(values["PUID"]), int(values["PGID"])
+        for path in paths:
+            if path.is_symlink():
+                raise RuntimeError("Navidrome mount directories must not be symlinks")
+            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.chmod(0o700)
+            if os.geteuid() == 0:
+                os.chown(str(path), uid, gid)
 
     def stage_credentials(self):
         values = read_env(self.env_file)
@@ -648,6 +666,7 @@ class Installer:
                                     if child.is_symlink():
                                         raise RuntimeError("restored runtime profile requires reviewed symlink ownership")
                                     os.chown(str(child), uid, gid)
+        self.prepare_navidrome_music_root(values)
         lx = import_helper(self.source / "services/lx-music/initialize.py", "installer_lx")
         config = Path(values["LX_DATA_PATH"]) / "data/config.js"
         auth = Path(values["LX_FRONTEND_AUTH_PATH"])

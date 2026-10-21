@@ -48,6 +48,13 @@ services:
         source: ${NAVIDROME_DATA_PATH:?Set a separate Navidrome data directory}
         target: /data
         bind: {create_host_path: false}
+      # The image declares VOLUME /music. Bind its parent explicitly so Docker
+      # cannot create an untracked anonymous volume around the child mounts.
+      - type: bind
+        source: ${NAVIDROME_DATA_PATH:?Set a separate Navidrome data directory}/music-root
+        target: /music
+        read_only: true
+        bind: {create_host_path: false}
       - *apple-music
       - *youtube-music
       - *bilibili-music

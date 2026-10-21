@@ -143,6 +143,45 @@ class AcceptanceGuardTests(unittest.TestCase):
             self.assertEqual(harness.wait_ready(harness.original), "synthetic-marker")
         sleep.assert_called_once_with(5)
 
+    def test_mount_audit_accepts_only_memory_tmpfs_and_exact_expected_socket_outside_root(self):
+        harness = acceptance.Harness(self.base / "new", self.base / "report.json")
+        mounts = [{"Type": "bind", "Source": str(harness.original / "data/lx"), "Destination": "/server/data"},
+                  {"Type": "tmpfs", "Source": "", "Destination": "/tmp"},
+                  {"Type": "bind", "Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}]
+        harness.command = mock.Mock(return_value=mock.Mock(stdout=json.dumps(mounts)))
+        harness.assert_mounts(harness.original, [{"id": "fixture-owned-id", "service": "lxserver"}])
+        self.assertNotIn("mount_failure", harness.result)
+
+    def test_persistent_mount_failures_include_safe_metadata_without_host_sources(self):
+        cases = [
+            {"Type": "bind", "Source": "/private/unshareable/source", "Destination": "/music"},
+            {"Type": "volume", "Source": "/var/lib/docker/volumes/anonymous-id/_data", "Destination": "/music"},
+            {"Type": "bind", "Source": "", "Destination": "/music"},
+            {"Type": "volume", "Source": "", "Destination": "/music"},
+            {"Type": "tmpfs", "Source": "/private/unshareable/source", "Destination": "/tmp"},
+            {"Type": "bind", "Source": "/var/run/docker.sock", "Destination": "/unexpected-socket-target"},
+        ]
+        for mount in cases:
+            with self.subTest(mount=mount):
+                harness = acceptance.Harness(self.base / "new", self.base / "report.json")
+                harness.command = mock.Mock(return_value=mock.Mock(stdout=json.dumps([mount])))
+                with self.assertRaisesRegex(acceptance.AcceptanceError, "service_mount_leaves_new_installation_root"):
+                    harness.assert_mounts(harness.original, [{"id": "fixture-owned-id", "service": "navidrome"}])
+                self.assertEqual(harness.result["mount_failure"], {"installation": "original", "service": "navidrome",
+                    "type": mount["Type"], "destination": mount["Destination"], "category": "service_mount_leaves_new_installation_root"})
+                self.assertNotIn("Source", json.dumps(harness.result))
+                for private in ("unshareable", "anonymous-id", "fixture-owned-id"):
+                    self.assertNotIn(private, json.dumps(harness.result))
+
+    def test_restored_mount_pointing_at_old_root_is_rejected_without_exposing_path(self):
+        harness = acceptance.Harness(self.base / "new", self.base / "report.json")
+        mount = {"Type": "bind", "Source": str(harness.original / "data"), "Destination": "/state"}
+        harness.command = mock.Mock(return_value=mock.Mock(stdout=json.dumps([mount])))
+        with self.assertRaisesRegex(acceptance.AcceptanceError, "restored_mount_still_points_to_old_root"):
+            harness.assert_mounts(harness.restored, [{"id": "fixture-owned-id", "service": "bot"}])
+        self.assertEqual(harness.result["mount_failure"]["destination"], "/state")
+        self.assertNotIn(str(self.base), json.dumps(harness.result))
+
     def test_restore_hold_requires_every_writer_created_and_never_started(self):
         harness = acceptance.Harness(self.base / "new", self.base / "report.json")
         rows = [{"service": name, "running": False, "started_at": "0001-01-01T00:00:00Z"}

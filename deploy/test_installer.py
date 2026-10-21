@@ -498,6 +498,76 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verified model path"):
             self.subject(config=config).stage_configuration()
 
+    def test_navidrome_mount_roots_are_private_owned_and_do_not_touch_database_bytes(self):
+        subject = self.subject(with_media_servers=True)
+        state = self.root / "data/navidrome"
+        state.mkdir(parents=True)
+        database = state / "navidrome.db"
+        database.write_bytes(b"synthetic existing database bytes")
+        database.chmod(0o600)
+        values = {"NAVIDROME_DATA_PATH": str(state), "PUID": "1234", "PGID": "2345"}
+        with mock.patch.object(installer.os, "geteuid", return_value=0), mock.patch.object(installer.os, "chown") as chown:
+            subject.prepare_navidrome_music_root(values)
+        parent = state / "music-root"
+        paths = [state, parent] + [parent / name for name in ("apple", "youtube", "bilibili")]
+        self.assertEqual({path.name for path in parent.iterdir()}, {"apple", "youtube", "bilibili"})
+        for path in paths:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+            self.assertIn(mock.call(str(path), 1234, 2345), chown.call_args_list)
+        self.assertTrue(all(not list((parent / name).iterdir()) for name in ("apple", "youtube", "bilibili")))
+        self.assertEqual(database.read_bytes(), b"synthetic existing database bytes")
+        self.assertEqual(database.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn(mock.call(str(database), 1234, 2345), chown.call_args_list)
+
+    def test_navidrome_mount_points_refuse_symlinks_without_touching_external_data(self):
+        subject = self.subject(with_media_servers=True)
+        state = self.root / "data/navidrome"
+        state.mkdir(parents=True)
+        outside = self.base / "unrelated"
+        outside.mkdir(mode=0o755)
+        before = outside.stat().st_mode
+        (state / "music-root").symlink_to(outside, target_is_directory=True)
+        values = {"NAVIDROME_DATA_PATH": str(state), "PUID": str(os.getuid()), "PGID": str(os.getgid())}
+        with self.assertRaisesRegex(RuntimeError, "must not be symlinks"):
+            subject.prepare_navidrome_music_root(values)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(outside.stat().st_mode, before)
+
+    def test_resume_prepares_navidrome_parent_before_containers_despite_credentials_checkpoint(self):
+        self.fixture_source()
+        marker = self.root / "existing-credential.fixture"
+        marker.write_text("synthetic-original")
+        installer.atomic_json(self.root / "state/install.json", {"completed": ["credentials"], "with_media_servers": True})
+        calls = {"credentials": 0, "containers": 0}
+        class ResumeFixture(installer.Installer):
+            def preflight(self):
+                return {}
+            def stage_credentials(self):
+                calls["credentials"] += 1
+                raise AssertionError("completed credentials must not be regenerated")
+            def stage_containers(self):
+                calls["containers"] += 1
+                parent = Path(installer.read_env(self.env_file)["NAVIDROME_DATA_PATH"]) / "music-root"
+                if {path.name for path in parent.iterdir()} != {"apple", "youtube", "bilibili"}:
+                    raise AssertionError("required mount points missing before container creation")
+            def container_status(self):
+                return []
+        with mock.patch.object(installer, "STAGES", ["configuration", "credentials", "containers"]), redirect_stdout(io.StringIO()):
+            first = ResumeFixture(self.root, runner=self.runner)
+            first.install()
+            values = installer.read_env(first.env_file)
+            parent = Path(values["NAVIDROME_DATA_PATH"]) / "music-root"
+            for child in parent.iterdir():
+                child.rmdir()
+            parent.rmdir()
+            ResumeFixture(self.root, runner=self.runner).install()
+        self.assertEqual(calls, {"credentials": 0, "containers": 1})
+        for path in [parent] + list(parent.iterdir()):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(path.stat().st_uid, int(values["PUID"]))
+            self.assertEqual(path.stat().st_gid, int(values["PGID"]))
+        self.assertEqual(marker.read_text(), "synthetic-original")
+
     def test_failure_and_resume_keep_completed_credentials_and_retry_failed_stage(self):
         calls = []
         fail = {"once": True}

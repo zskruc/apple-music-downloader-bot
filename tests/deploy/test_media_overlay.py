@@ -41,6 +41,20 @@ class MediaOverlayTests(unittest.TestCase):
             state_paths.add(state["source"])
         self.assertEqual(len(state_paths), 3)
 
+    def test_navidrome_declared_parent_volume_is_owned_and_media_stays_read_only(self):
+        # The pinned publisher config declares both targets. Binding only the
+        # child libraries would leave Docker to allocate an anonymous /music.
+        mounts = {item["target"]: item for item in self.overlay["services"]["navidrome"]["volumes"]}
+        self.assertTrue({"/data", "/music"}.issubset(mounts))
+        state, parent = mounts["/data"], mounts["/music"]
+        self.assertEqual(parent["type"], "bind")
+        self.assertEqual(parent["source"], state["source"] + "/music-root")
+        self.assertTrue(parent["read_only"])
+        self.assertFalse(parent["bind"]["create_host_path"])
+        for name in ("apple", "youtube", "bilibili"):
+            self.assertTrue(mounts["/music/" + name]["read_only"])
+            self.assertFalse(mounts["/music/" + name]["bind"]["create_host_path"])
+
     def test_external_player_settings_are_not_forced_to_internal_services(self):
         env = self.overlay["services"]["bot"]["environment"]
         self.assertTrue(all(value.endswith(":-}") for value in env.values()))

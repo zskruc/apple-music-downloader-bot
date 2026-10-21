@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 import urllib.parse
 
-from deploy.installer import OWNER_LABEL, RESTORE_TASK_WRITERS, SOURCE, STAGES, atomic_json, read_env, read_json, validate_root
+from deploy.installer import OWNER_LABEL, RESTORE_TASK_WRITERS, SERVICES, SOURCE, STAGES, atomic_json, read_env, read_json, validate_root
 from deploy import manage
 
 
@@ -386,15 +386,32 @@ class Harness:
             mounts = json.loads(self.command(["docker", "inspect", "--format", "{{json .Mounts}}", row["id"]],
                                             root.name + "-mounts", capture=True).stdout)
             for mount in mounts:
-                source = Path(mount.get("Source", "/"))
-                if str(source) == "/var/run/docker.sock":
+                raw_source = mount.get("Source")
+                kind = mount.get("Type")
+                destination = mount.get("Destination")
+                # Docker reports a memory-only tmpfs with no host Source.
+                # Empty sources for persistent bind/volume mounts still fail.
+                if kind == "tmpfs" and raw_source in (None, ""):
                     continue
+                if kind == "bind" and raw_source == destination == "/var/run/docker.sock":
+                    continue
+                def fail(category):
+                    service = row.get("service")
+                    self.result["mount_failure"] = {
+                        "installation": root.name if root.name in {"original", "restored"} else "installation",
+                        "service": service if service in set(SERVICES) | {"navidrome", "emby", "lrcapi"} else "unknown",
+                        "type": kind if kind in {"bind", "volume", "tmpfs"} else "unknown",
+                        "destination": destination if isinstance(destination, str) and re.fullmatch(r"/[A-Za-z0-9_./ -]{0,255}", destination) else "<nonstandard>",
+                        "category": category,
+                    }
+                    raise AcceptanceError(category) from None
+                source = Path(raw_source or "/")
+                if root == self.restored and (source == self.original or self.original in source.parents):
+                    fail("restored_mount_still_points_to_old_root")
                 try:
                     source.relative_to(root)
                 except ValueError:
-                    raise AcceptanceError("service_mount_leaves_new_installation_root") from None
-                if root == self.restored and (source == self.original or self.original in source.parents):
-                    raise AcceptanceError("restored_mount_still_points_to_old_root")
+                    fail("service_mount_leaves_new_installation_root")
 
     def guest_check(self, root, rows, marker=None, expected_cpus=None):
         values = read_env(root / "config/private.env")

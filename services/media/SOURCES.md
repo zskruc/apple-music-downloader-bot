@@ -43,6 +43,20 @@ pulled or executed during preparation.
   bot's configured output paths and are read-only, with no implicit creation of
   media directories. Existing personal libraries are not mounted by default;
   `personal-libraries.compose.example.yaml` is an explicit additional opt-in.
+- The pinned Navidrome image declares `/data` and `/music` as volumes. Both
+  have explicit bind mounts: `/music` is read-only from
+  `NAVIDROME_DATA_PATH/music-root`, containing the `apple`, `youtube` and
+  `bilibili` mount-point directories. The three media libraries remain separate
+  read-only child mounts. This prevents an anonymous parent volume. The parent
+  is included with the existing Navidrome state tree in private snapshots;
+  nested sources are archived once. The installer creates the directories as
+  mode 0700 owned by PUID/PGID before containers, and checks them again on resume.
+  This was verified directly from the publisher registry's pinned linux/amd64
+  manifest `sha256:59ce76e6e06193fbfbb1736a93b8468227e1ea663fc7b25b1da13fbb97f5197b`
+  and config `sha256:3fa63c3ddc32d31c79970194d2d83143ac316b0bcef78695d1d9ab4c5a4f84b9`,
+  whose `Config.Volumes` is `{"/data":{},"/music":{}}`. The index, manifest
+  and config bytes each matched their SHA-256; no image layers were downloaded
+  for this metadata check.
 - Host management ports bind only to `127.0.0.1`: Navidrome 14533, Emby 18096,
   LrcAPI 28883 by default. No host network, discovery port, hardware device,
   privileged mode or Docker socket is added.
@@ -64,3 +78,27 @@ pulled or executed during preparation.
 
 Original overlay/configuration examples are covered by the repository's MIT
 license. It does not relicense any referenced service or dependency.
+
+## Manual directory preparation
+
+For manual Compose deployment, prepare the existing service-state directories
+and Navidrome's parent/child mount points before creating containers. Use your
+own data-disk path and the same PUID/PGID set in the private environment. For
+the example path and UID/GID 1000:
+
+```sh
+sudo install -d -m 0700 -o 1000 -g 1000 \
+  /volume1/docker/amdl-suite/data/navidrome \
+  /volume1/docker/amdl-suite/data/navidrome/music-root \
+  /volume1/docker/amdl-suite/data/navidrome/music-root/apple \
+  /volume1/docker/amdl-suite/data/navidrome/music-root/youtube \
+  /volume1/docker/amdl-suite/data/navidrome/music-root/bilibili \
+  /volume1/docker/amdl-suite/data/emby \
+  /volume1/docker/amdl-suite/data/lrcapi
+```
+
+Keep these mount-point directories empty; do not copy libraries into them.
+Compose mounts the configured bot libraries over them. The parent `/music`
+bind and all child media binds remain read-only. `create_host_path: false`
+deliberately refuses missing paths. The one-command installer performs this
+preparation itself and does not require this manual command.
