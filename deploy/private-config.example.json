@@ -8,5 +8,6 @@
     "YT_DOWNLOAD_PROXY_URL": "",
     "YT_LARGE_DOWNLOAD_PROXY_URL": "",
     "BILI_DOWNLOAD_PROXY_URL": ""
-  }
+  },
+  "restore_services": {}
 }

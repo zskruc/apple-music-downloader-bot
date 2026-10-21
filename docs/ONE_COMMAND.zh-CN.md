@@ -133,6 +133,8 @@ sudo python3 /srv/apple-music-downloader/source/install.py restore --root /srv/a
 
 确认最终备份成功并用 `status` 检查旧栈停止；失败时它可能已经自动恢复，先处理故障再切换。恢复若需保留选装播放器，显式传 `--with-media-servers`；仅有其归档数据不会自动选装服务。恢复先校验内容与覆盖记录，把数据放到新根并重新映射挂载；包含镜像时会 `docker load`、核对 image ID，并沿用归档服务镜像，避免重新构建/拉取这些服务。未包含的依赖仍需网络。恢复原始任务数据库，保留 queued 状态，不全量清队列；Bot 真正启动后由已有恢复逻辑处理可续任务，失败/中断任务仍需按状态检查。
 
+旧多项目部署的服务名不同时，在同一私有 JSON 中使用与 `env` 并列的 `restore_services` 对象，如 `{"env":{"START_BOT":false},"restore_services":{"legacy-vm":"legacy-wrapper","wrapper-adapter":"wrapper"}}`。键可为旧服务名，或用 `项目名/旧服务名`、`项目ID/旧服务名` 消除重名；示例只是命名格式，必须按自己的已审查快照填写。映射在后续 `resume` 中保留。未知持久服务、未选装的播放器、歧义映射、不同数据映射到同一挂载目标、不同镜像合并到同一服务或未匹配任何记录的映射，都会在写入恢复数据前拒绝。映射名称不验证旧镜像的接口兼容性；旧配置、容器挂载目标、镜像入口和账号状态仍需独立审查。
+
 **备份中的 `START_BOT=true` 不算切换批准。** 上例私有配置应保持 `START_BOT=false`。恢复尚未批准时，Bot、两个 watchdog、LX/SQ 应用和两个歌词 worker 都创建但保持停止；数据库、网易 API、wrapper、PO provider 和播放器可以运行以供检查。若当前 restore 调用的 JSON 已明确传入 `START_BOT=true`，就会当作批准，因此不要提前复用允许启动的生产配置。人工完成新根的配置、账号和挂载检查后，另外创建私有 `/srv/amdl-private/cutover.json`，内容为 `{"env":{"START_BOT":true}}`，文件权限 0600，再明确批准切换：
 
 ```sh

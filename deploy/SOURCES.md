@@ -160,7 +160,11 @@ private and are not encrypted by the helper. `--without-media` and
 `--without-images` explicitly record omissions. A verified source archive plus
 a fully initialized private bundle and its images supports offline recovery of
 the recorded inputs; missing images, model files or unfinished guest setup can
-still require network access. See the [deployment guide](../docs/ONE_COMMAND.en.md).
+still require network access. Daily backups resume originally running services;
+use `--leave-stopped` for a final frozen migration snapshot. Restoring does not
+approve task execution merely because the saved environment permitted it: the
+current invocation must explicitly approve `START_BOT=true` in private JSON.
+See the [deployment guide](../docs/ONE_COMMAND.en.md).
 
 The deployment acceptance harness and isolated CI workflow are provided, but a
 real Docker/KVM run and authenticated business acceptance have not yet been
