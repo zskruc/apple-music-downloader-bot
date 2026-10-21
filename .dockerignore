@@ -7,6 +7,14 @@
 !vm/**
 !licenses/
 !licenses/Deno-MIT.txt
+!licenses/yt-dlp-sabr-Unlicense.txt
+!licenses/yt-dlp-sabr-THIRD_PARTY_LICENSES.txt
+!services/
+services/**
+!services/youtube/
+services/youtube/**
+!services/youtube/install_sabr_tool.py
+!services/youtube/SABR_SOURCES.md
 **/__pycache__
 **/*.pyc
 **/.env
@@ -20,3 +28,4 @@
 **/*.key
 **/state
 **/session
+!bot/yt_dlp_readonly_cookies.py

@@ -11,6 +11,8 @@ x-bot-image: &bot-image
   build:
     context: .
     dockerfile: Dockerfile
+    args:
+      INSTALL_YT_SABR: ${INSTALL_YT_SABR:-false}
 
 x-worker: &worker
   <<: *bot-image

@@ -65,10 +65,11 @@ wrapper-manager is AGPL-3.0; see [third-party notices](../THIRD_PARTY_NOTICES.md
 
 ## Limits
 
-The NAS domain was resolved through the required public IPv6 SSH route, but
-both connection attempts returned `No route to host`. No alternative address
-or overlay route was used. Consequently, this snapshot has **not** been
-compared against the final live NAS source or active configuration.
+During initial preparation, the required domain/IPv6 SSH route returned
+`No route to host`; no alternative address or overlay route was used.
+Connectivity later recovered and a read-only live comparison was completed
+on 2026-10-21. See the [live check record](LIVE_CHECK_20261021.md) for verified
+source/configuration scope, portable differences and remaining acceptance limits.
 
 The preparation host has no Docker runtime. A clean image build, KVM guest
 cold start, account login, actual media downloads, media-server scanning,
@@ -86,7 +87,7 @@ its images until the replacement has passed those checks.
 逐文件来源及脱敏前后哈希见同目录清单。未部署候选没有当成生产基线。
 
 456 项应用回归与 12 项运维模拟测试已通过，Compose schema 与脚本语法检查通过。
-因 NAS 公网 IPv6 不可达，尚未核对线上最终状态；
+首次整理时 NAS IPv6 不可达；后续已完成[只读线上核验](LIVE_CHECK_20261021.md)。
 本机无 Docker，新的通用模板尚未完成容器构建、账号下载、VM 冷启动和恢复验收。
 这些限制同样在中英文 README 首屏注明。
 
@@ -143,5 +144,36 @@ paths/hashes remain as provenance for the initial curated files.
 本轮已补齐 YouTube Music、视频下载、中文字幕/双语外置字幕和 Cookie 持久化的
 中英文文档、配置与认证工具。Cookie 导出先校验后替换，保留上一份回滚；
 下载使用私有副本，避免旧任务覆盖新会话。552 项隔离测试通过。
-未上传真实 Cookie、浏览器 profile、私有配置或媒体；NAS IPv6 直连仍不可达，
-真实登录、下载、播放、容器构建及备份恢复仍须在部署主机验收。
+未上传真实 Cookie、浏览器 profile、私有配置或媒体。后续直连核验见
+[线上记录](LIVE_CHECK_20261021.md)；新的真实登录、下载、播放、容器构建及
+备份恢复仍须在部署主机验收。
+
+## Live verification and SABR completion, 2026-10-21
+
+Direct domain/IPv6 access recovered. The read-only check compared all 57
+published Python source files against the running bot, reviewed differences,
+confirmed persistent state/browser mounts and inspected existing video/subtitle
+files. It did not change the NAS or exercise new authenticated downloads.
+The [live check record](LIVE_CHECK_20261021.md) distinguishes these observations
+from playback, Cookie validity, image-build and recovery acceptance.
+
+The check identified one omitted deployed behavior: unfinished online-media
+tasks retain their original IDs for service restart while explicit user stops
+remain stopped. This is now included with regression coverage.
+
+The deployed SABR tool was also present and its bytes matched the public
+upstream release asset. Its fixed source revision, digest, download recipe and
+unmodified third-party notices are now recorded in
+[SABR_SOURCES.md](../services/youtube/SABR_SOURCES.md). The original adapter and
+private-Cookie runner support that tool as a separate opt-in. Default builds do
+not download it, and default runtime settings do not select it. The vendor
+executable itself is not committed. No unexecuted video-priority candidate or
+production-specific URL rule was added.
+
+The completed repository passed **573 isolated tests** under Python 3.12.
+New coverage includes restart preservation, SABR selection and integrity
+rejection, Cookie isolation under the optional engine, safe candidate-probe
+failure and atomic installer failure boundaries. CI additionally checks
+required image-source inclusion with an offline scratch build. The public
+Cookie recovery enhancements and optional installer were not deployed to NAS
+as part of this check.

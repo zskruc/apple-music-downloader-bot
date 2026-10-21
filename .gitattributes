@@ -1,0 +1,2 @@
+# Preserve the exact upstream aggregation, including its original whitespace.
+licenses/yt-dlp-sabr-THIRD_PARTY_LICENSES.txt -whitespace

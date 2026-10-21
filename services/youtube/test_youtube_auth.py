@@ -123,6 +123,19 @@ class CookiePersistenceTests(unittest.TestCase):
         self.assertEqual((self.destination.read_bytes(), self.previous.read_bytes()), before)
         self.assertEqual(list(self.root.glob(".cookies.txt.*")), [self.root / ".cookies.txt.lock"])
 
+    def test_sabr_integrity_failure_keeps_current_and_previous_without_anonymous_probe(self):
+        write_cookies(self.destination, "synthetic-current")
+        write_cookies(self.previous, "synthetic-previous")
+        before = (self.destination.read_bytes(), self.previous.read_bytes())
+        with mock.patch("yt_dlp.cookies.load_cookies", return_value=self.source()), \
+                mock.patch("youtube_ingest.PO_TOKEN_ENABLED", True), \
+                mock.patch("youtube_ingest._sabr_tool_path", side_effect=RuntimeError("完整性校验失败")), \
+                mock.patch("youtube_ingest.probe_url") as probe:
+            with self.assertRaisesRegex(RuntimeError, "保留现有文件"):
+                auth.export_profile(self.profile, self.destination, "https://youtu.be/example", browser_stopped=True)
+        probe.assert_not_called()
+        self.assertEqual((self.destination.read_bytes(), self.previous.read_bytes()), before)
+
     def test_validated_rollback_swaps_private_current_and_previous(self):
         write_cookies(self.destination, "synthetic-current")
         write_cookies(self.previous, "synthetic-previous")

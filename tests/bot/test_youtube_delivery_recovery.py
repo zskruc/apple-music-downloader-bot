@@ -217,6 +217,7 @@ class YouTubeBotCancellationWiringTests(unittest.TestCase):
                     "stop_event": types.SimpleNamespace(is_set=lambda: state["shutdown"]),
                     "task_should_stop": lambda _job: state["task_stop"],
                     "clear_active_task_process": mock.Mock(),
+                    "preserve_job_for_restart": lambda _job: False,
                     "task_status": lambda _job: "stopped",
                     "update_task_card": mock.Mock(),
                     "time": types.SimpleNamespace(time=lambda: 0),
@@ -227,6 +228,54 @@ class YouTubeBotCancellationWiringTests(unittest.TestCase):
                 self.assertEqual(len(captured), 1)
                 self.assertEqual("cancel_observer" in captured[0], kind.startswith("youtube_"))
                 self.assertEqual(observed_cancellation, [False, True, True] if kind.startswith("youtube_") else [])
+
+    def test_service_restart_retains_same_task_while_user_stop_stays_stopped(self) -> None:
+        source = ast.parse((BOT_ROOT / "ingest_bot.py").read_text())
+        names = {"process_online_media_job", "preserve_job_for_restart"}
+        functions = [node for node in source.body if isinstance(node, ast.FunctionDef) and node.name in names]
+        self.assertEqual({function.name for function in functions}, names)
+        module = ast.Module(body=[
+            ast.ImportFrom(module="__future__", names=[ast.alias("annotations")], level=0),
+            *functions,
+        ], type_ignores=[])
+        code = compile(ast.fix_missing_locations(module), str(BOT_ROOT / "ingest_bot.py"), "exec")
+        for original_status, expected in (("running", "queued"), ("paused", "paused"), ("stopping", "stopped")):
+            with self.subTest(original_status=original_status):
+                store = mock.Mock()
+                update = mock.Mock()
+                journal = mock.Mock()
+                namespace = {
+                    "download_youtube": mock.Mock(side_effect=RuntimeError("synthetic shutdown")),
+                    "display_youtube_path": mock.Mock(),
+                    "online_process_observer": mock.Mock(),
+                    "online_progress_observer": mock.Mock(),
+                    "online_video_library_lock": contextlib.nullcontext(),
+                    "LOG_DIR": Path("unused"),
+                    "stop_event": types.SimpleNamespace(is_set=lambda: True),
+                    "task_should_stop": lambda _job: original_status in {"stopping", "stopped"},
+                    "task_status": lambda _job: original_status,
+                    "clear_active_task_process": mock.Mock(),
+                    "task_card_store": store,
+                    "append_journal": journal,
+                    "job_record": lambda job: {"task_id": job.task_id},
+                    "update_task_card": update,
+                    "time": types.SimpleNamespace(time=lambda: 0),
+                }
+                exec(code, namespace)
+                job = types.SimpleNamespace(kind="youtube_video", urls=["https://invalid.example/"], label="example", task_id=73)
+                namespace["process_online_media_job"](job)
+                if expected == "stopped":
+                    store.update.assert_not_called()
+                    journal.assert_not_called()
+                    self.assertEqual(update.call_args.args, (73,))
+                    self.assertEqual(update.call_args.kwargs["status"], "stopped")
+                else:
+                    update.assert_not_called()
+                    self.assertEqual(store.update.call_args.args, (73,))
+                    self.assertEqual(store.update.call_args.kwargs["status"], expected)
+                    self.assertIsNone(store.update.call_args.kwargs["finished_at"])
+                    self.assertEqual(journal.call_args.args[0]["event"], "deferred_for_restart")
+                    self.assertEqual(journal.call_args.args[0]["job"], {"task_id": 73})
 
 
 if __name__ == "__main__":

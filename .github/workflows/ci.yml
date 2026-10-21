@@ -17,6 +17,16 @@ jobs:
       - run: python -m pip install -r requirements-test.txt
       - run: python scripts/check_repo.py
       - run: python scripts/run_tests.py
+      - name: Verify image source inclusion without downloads
+        run: |
+          docker build --network=none -f - . <<'DOCKERFILE'
+          FROM scratch
+          COPY bot/yt_dlp_readonly_cookies.py /app/yt_dlp_readonly_cookies.py
+          COPY services/youtube/install_sabr_tool.py /app/install_sabr_tool.py
+          COPY services/youtube/SABR_SOURCES.md /notices/SOURCES.md
+          COPY licenses/yt-dlp-sabr-Unlicense.txt /notices/LICENSE
+          COPY licenses/yt-dlp-sabr-THIRD_PARTY_LICENSES.txt /notices/THIRD_PARTY_LICENSES.txt
+          DOCKERFILE
       - name: Validate deployment templates
         env:
           SQ_DB_PASSWORD: ci-config-only

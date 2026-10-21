@@ -4,7 +4,7 @@
 
 A self-hosted Telegram / Synology Chat media ingestion service for a NAS. It accepts links and search requests, processes jobs through GAMDL, yt-dlp and a local wrapper service, and writes media, artwork and lyrics to configured folders.
 
-This repository packages a customized NAS deployment into source code, portable deployment templates and an operations guide. **The initial snapshot was assembled from local maintenance material dated through 2026-10-19. The NAS public IPv6 connection was unavailable during preparation on 2026-10-21, so the final live files could not be compared. A clean container build and real-account acceptance test are also pending.** Treat this as a source snapshot requiring integration validation.
+This repository packages a customized NAS deployment into source code, portable deployment templates and an operations guide. **The initial snapshot used maintenance material dated through 2026-10-19. A subsequent read-only IPv6 check on 2026-10-21 compared live source, mounts, dependencies and existing media. The portable templates retain [documented differences](docs/LIVE_CHECK_20261021.md) from the customized deployment. A clean build, new authenticated downloads and recovery acceptance tests remain pending.** Treat this as a source snapshot requiring integration validation.
 
 ## Features
 
@@ -13,6 +13,7 @@ This repository packages a customized NAS deployment into source code, portable 
 - Persistent task state, library indexing and deduplication, progress cards and failure reporting.
 - YouTube / YouTube Music and Bilibili audio or video ingestion, with optional Navidrome / Emby integration.
 - Manual/automatic YouTube captions, Chinese or Chinese-plus-original-language SRT/ASS sidecars; persistent browser sessions, candidate cookie validation, atomic updates and rollback.
+- Optional SABR compatibility with a pinned upstream tool and preserved notices; separate build-install and runtime opt-ins.
 - LRC / TTML lyrics, word-timed lyric matching, persistent queues, retries and notifications.
 - A wrapper protocol adapter, KVM VM provisioning support, on-demand authentication browsers and service-scoped recovery.
 - Documented backups, upgrades, rollbacks and troubleshooting.

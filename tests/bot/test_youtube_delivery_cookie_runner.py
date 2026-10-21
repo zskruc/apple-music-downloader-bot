@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import os
 import signal
 import stat
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -72,6 +74,44 @@ class YouTubePrivateCookieRunnerTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"yt_dlp": module}):
             self.assertEqual(runner.main(["--version"]), 0)
         module.main.assert_called_once_with(["--version"])
+
+    def test_sabr_archive_engine_uses_private_snapshot_and_preserves_browser_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "cookies.txt"
+            source.write_text("synthetic-old-session", encoding="utf-8")
+            tool = root / "synthetic-yt-dlp.zip"
+            engine = (
+                "from pathlib import Path\n"
+                "def main(arguments):\n"
+                " cookie = Path(arguments[arguments.index('--cookies') + 1])\n"
+                " source = Path(arguments[arguments.index('--fixture-source') + 1])\n"
+                " assert cookie != source\n"
+                " assert cookie.stat().st_mode & 0o777 == 0o600\n"
+                " assert cookie.parent.stat().st_mode & 0o777 == 0o700\n"
+                " assert cookie.read_text() == 'synthetic-old-session'\n"
+                " source.write_text('synthetic-new-browser-session')\n"
+                " cookie.write_text('synthetic-older-download-update')\n"
+                " print(cookie.parent, flush=True)\n"
+                " return 23\n"
+            )
+            with zipfile.ZipFile(tool, "w") as archive:
+                archive.writestr("yt_dlp/__init__.py", engine)
+            digest = hashlib.sha256(tool.read_bytes()).hexdigest()
+            bootstrap = (
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "import yt_dlp_readonly_cookies as runner; "
+                "runner.SABR_TOOL_SHA256 = sys.argv[2]; "
+                "raise SystemExit(runner.main(sys.argv[3:]))"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", bootstrap, str(BOT_ROOT), digest,
+                 "--sabr-tool", str(tool), "--cookies", str(source), "--fixture-source", str(source)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10,
+            )
+            self.assertEqual(completed.returncode, 23, completed.stderr)
+            self.assertEqual(source.read_text(), "synthetic-new-browser-session")
+            self.assertFalse(Path(completed.stdout.strip()).exists())
 
     def test_sigterm_preserves_signal_exit_and_removes_private_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

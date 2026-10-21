@@ -56,6 +56,16 @@ class YouTubeConfiguration(unittest.TestCase):
         for filename in ('nas_youtube_auth.py', 'yt_dlp_readonly_cookies.py'):
             self.assertTrue((ROOT / 'bot' / filename).is_file())
 
+    def test_sabr_build_and_runtime_require_separate_explicit_opt_ins(self):
+        build = self.services['bot']['build']
+        self.assertEqual(self.environment['INSTALL_YT_SABR'], 'false')
+        self.assertEqual(self.environment['YT_SABR_FALLBACK_ENABLED'], 'false')
+        self.assertEqual(expand(build['args']['INSTALL_YT_SABR'], self.environment), 'false')
+        installation = dict(self.environment, INSTALL_YT_SABR='true')
+        self.assertEqual(expand(build['args']['INSTALL_YT_SABR'], installation), 'true')
+        self.assertEqual(installation['YT_SABR_FALLBACK_ENABLED'], 'false')
+        self.assertEqual(self.environment['YT_SABR_TOOL_PATH'], '/app/vendor/yt-dlp-sabr/yt-dlp')
+
 
 if __name__ == '__main__':
     unittest.main()

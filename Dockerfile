@@ -20,6 +20,7 @@ RUN git init && git remote add origin https://github.com/ggml-org/whisper.cpp.gi
 FROM ${PYTHON_IMAGE}
 ARG RELEASE_VERSION=source
 ARG WHISPER_CPP_REVISION=4979e04f5dcaccb36057e059bbaed8a2f5288315
+ARG INSTALL_YT_SABR=false
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl ffmpeg tini libstdc++6 fontconfig fonts-noto-cjk fonts-liberation2 \
@@ -30,6 +31,15 @@ COPY --from=whisper-builder /src/build/bin/whisper-cli /usr/local/bin/whisper-cl
 COPY --from=whisper-builder /src/LICENSE /usr/share/doc/whisper.cpp/LICENSE
 RUN printf '%s\n' "https://github.com/ggml-org/whisper.cpp/tree/${WHISPER_CPP_REVISION}" \
     > /usr/share/doc/whisper.cpp/SOURCE
+COPY services/youtube/install_sabr_tool.py /usr/local/libexec/install_sabr_tool.py
+COPY licenses/yt-dlp-sabr-Unlicense.txt /usr/share/doc/yt-dlp-sabr/LICENSE
+COPY licenses/yt-dlp-sabr-THIRD_PARTY_LICENSES.txt /usr/share/doc/yt-dlp-sabr/THIRD_PARTY_LICENSES.txt
+COPY services/youtube/SABR_SOURCES.md /usr/share/doc/yt-dlp-sabr/SOURCES.md
+RUN case "${INSTALL_YT_SABR}" in \
+      false) ;; \
+      true) python /usr/local/libexec/install_sabr_tool.py ;; \
+      *) printf '%s\n' 'INSTALL_YT_SABR must be true or false' >&2; exit 1 ;; \
+    esac
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \

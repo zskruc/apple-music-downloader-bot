@@ -94,7 +94,9 @@ def probe_candidate(candidate: Path, url: str) -> object:
     youtube_ingest.AUTH_AUTO_REFRESH_DISABLED = True
     try:
         strategy = (
-            "cookies-po-token" if youtube_ingest.PO_TOKEN_ENABLED
+            "cookies-sabr"
+            if youtube_ingest.PO_TOKEN_ENABLED and youtube_ingest._sabr_tool_path() is not None
+            else "cookies-po-token" if youtube_ingest.PO_TOKEN_ENABLED
             else "cookies-standard"
         )
         return youtube_ingest.probe_url(

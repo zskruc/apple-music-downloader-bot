@@ -100,19 +100,62 @@ bot 镜像固定安装 yt-dlp、yt-dlp-ejs、bgutil 插件、Deno 和 FFmpeg，�
 
 | 请求路径 | 配置和行为 |
 | --- | --- |
-| 媒体信息、大小预估、视频字幕、封面 | `YT_DOWNLOAD_PROXY_URL`；模板显式留空，在未另设通用代理环境变量时直连 |
+| 普通 yt-dlp 媒体信息、大小预估、视频字幕、封面 | `YT_DOWNLOAD_PROXY_URL`；模板显式留空，在未另设通用代理环境变量时直连 |
 | 大体积音频/视频下载 | 配置 `YT_LARGE_DOWNLOAD_PROXY_URL` 后，预估超过 `YT_LARGE_DOWNLOAD_THRESHOLD_MIB=500` 或大小未知时优先使用该路径；留空则沿用普通路径 |
 | 下载过程中的网络错误 | 在两条不同路径间尝试切换，保留本次下载的分片；两条配置相同则不重复切换 |
 | Chromium 登录浏览器 | 独立的 `YOUTUBE_BROWSER_ARGS`；需要时加入 `--proxy-server=http://host.docker.internal:7890`，不会自动继承 bot 的下载代理 |
 | bot → PO 服务健康检测 | 容器内网直连 `/ping`，显式绕过系统代理 |
+| 显式启用的 SABR 策略 | 未传入本次下载选定的代理时，优先大体积代理，未设置则用普通代理；显式传入的代理优先 |
 | Beets 元数据、LRCLIB 歌词查询 | 使用普通 `YT_DOWNLOAD_PROXY_URL`；本地 `YT_LRCAPI_URL` 请求则使用 urllib 默认的环境代理规则 |
 | Telegram、Apple、Bilibili | 使用各自配置，不受 `YT_DOWNLOAD_PROXY_URL` 自动控制 |
 
 大小预估默认最多 300 秒（`YT_DOWNLOAD_SIZE_PROBE_TIMEOUT_SECONDS`）。只配置实际可用、容器可达的代理。宿主机 `127.0.0.1` 在容器中指容器自己；模板为宿主服务提供 `host.docker.internal`。含用户名/密码的代理 URL 属于凭据，避免放进公开命令、问题报告和截图。
 
-`YT_PLAYER_CLIENT=mweb` 与 PO provider 配合。正常解析可尝试 Cookie + PO、Cookie + embedded、匿名 embedded、匿名 + PO 等策略；没有 Cookie 的公开内容也可能成功。Cookie 候选校验则强制使用 Cookie 策略，禁止匿名回退，以免“公开链接能打开”被误判为“登录已恢复”。PO 服务故障时先检查健康和版本兼容；无 Docker socket 的默认部署需管理员通过运维命令恢复服务，bot 无法自行启动/重启它。
+`YT_PLAYER_CLIENT=mweb` 与 PO provider 配合。正常解析可尝试 Cookie + PO、Cookie + embedded、匿名 embedded、匿名 + PO 等策略；满足下节条件时额外加入 `cookies-sabr`。没有 Cookie 的公开内容也可能成功。Cookie 候选校验则强制使用 Cookie 策略，禁止匿名回退，以免“公开链接能打开”被误判为“登录已恢复”。PO 服务故障时先检查健康和版本兼容；无 Docker socket 的默认部署需管理员通过运维命令恢复服务，bot 无法自行启动/重启它。
 
 升级应共同检查 yt-dlp、EJS、Deno、PO 插件/服务和当前 YouTube 客户端行为。不要仅升级其中一个包就声称最高画质或登录仍兼容。外部规则会变化，参见 [yt-dlp YouTube 说明](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#youtube)与 [PO provider 上游](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)。
+
+### 显式可选的 SABR 工具
+
+普通镜像继续使用已固定版本的 yt-dlp；**默认不下载、不安装、不启用 SABR fork**。需要尝试与线上专用工具对应的路径时，在私有 `.env` 设置：
+
+```dotenv
+INSTALL_YT_SABR=true
+YT_SABR_FALLBACK_ENABLED=true
+YT_SABR_TOOL_PATH=/app/vendor/yt-dlp-sabr/yt-dlp
+```
+
+`INSTALL_YT_SABR` 是构建参数，Compose 将它传入 bot 镜像构建；`YT_SABR_FALLBACK_ENABLED` 是运行时开关。两者默认均为 `false`：只改运行时开关不会安装工具，只安装工具也不会将它加入下载策略。工具通过同一私有 Cookie 副本执行器运行，不能让 fork 直接覆盖持久 Cookie。
+
+加入 `cookies-sabr` 还要求 Cookie 登录链完整、`YT_PO_TOKEN_ENABLED=true`、provider 地址非空，且工具存在并通过固定 SHA-256 校验。正常策略顺序为 `cookies-po-token` → `cookies-embedded` → `cookies-sabr` → `anonymous-embedded` → `anonymous-po-token`，具体探测成功的策略可能优先用于后续下载。每次媒体下载尝试最多调用一次 SABR，即使普通策略重复两轮也不会重复调用；一次浏览器恢复后的新下载尝试重新计算预算。独立字幕请求也可使用该策略，不受媒体调用次数限制。
+
+启用且工具通过校验时，Cookie 导出/回滚的候选探测直接强制 `cookies-sabr`，否则强制 `cookies-po-token`；关闭 PO 时使用 `cookies-standard`。三者均禁用匿名回退和递归刷新。SABR 运行时完整性校验失败会明确报错，不会忽略校验或改为执行其他来源的工具。
+
+构建安装器为 `services/youtube/install_sabr_tool.py`。固定元数据如下；完整来源和许可见 [SABR_SOURCES.md](../services/youtube/SABR_SOURCES.md)。
+
+| 项目 | 固定值 |
+| --- | --- |
+| 工具版本 | `2026.08.19.233452` |
+| 来源提交 | `6ef0ae00f0a4e9dd042193b3f5a2bb28b5fc0ca6` |
+| 可执行文件 SHA-256 | `8e851af222deaeeced7a9444a3c961fa054dc850e92d400e3ff73110f7bd9f4d` |
+
+上游 `sabr` 发布标签可能移动，安装器不会因此接受新文件：下载结果 SHA-256 不匹配就拒绝安装，必须重新审查来源和兼容性后才能有意更新固定值。fork 的 Unlicense 和其内含第三方许可独立保留，不按本项目 MIT 重新许可；启用的镜像在 `/usr/share/doc/yt-dlp-sabr/` 保存许可和来源说明。
+
+已有生产镜像时，先用**全新标签**构建候选，再走现有单服务升级流程；每次替换示例标签为尚未使用的新标签。首条构建命令不会重建正在运行的 bot，后面的 `upgrade` 才进入维护更新：
+
+```sh
+docker build --build-arg INSTALL_YT_SABR=true \
+  --tag local/apple-music-downloader-bot:sabr-reviewed .
+# 暂停提交、等待空闲；保留部署时实际使用的 profile / socket 选项。
+bash ops/stack.sh --profile auth upgrade bot local/apple-music-downloader-bot:sabr-reviewed /srv/private-backups/youtube-sabr-upgrade
+bash ops/stack.sh probe
+# 验收失败时回退镜像：
+bash ops/stack.sh --profile auth rollback /srv/private-backups/youtube-sabr-upgrade
+```
+
+`bash ops/stack.sh build bot` 也会传入 `.env` 的构建参数，但会使用当前 Compose/镜像覆盖选定的标签。仅在新部署，或已明确将构建标签独立于旧镜像时使用它；不要在生产环境把旧标签覆盖成候选。`upgrade` 期间读取 `.env` 的运行时开关；回滚旧镜像前也应评估这些配置是否适合旧版本，镜像回滚不回退 `.env`。
+
+这是预发布 fork 的可选策略，不能保证 SABR 下载、登录、4K/8K 或某个客户端格式可用，也不自动补齐缺失字幕。使用同一质量筛选、受限重试和任务取消机制；不要把安装成功或版本输出当作真实下载验收。此次只补公开来源、安装路径和离线检查，没有下载执行该可选二进制，也没有在 NAS 上改变现有服务或创建新媒体下载。
 
 ## 6. Cookie 与 Chromium 配置持久化
 
@@ -148,7 +191,7 @@ bash services/youtube/youtube-auth.sh export 'https://www.youtube.com/watch?v=VI
 bash services/youtube/youtube-auth.sh status
 ```
 
-helper 会停止 Chromium、通过 Docker 确认停止，再在运行中的 bot 内执行导出。导出器创建同目录 0600 候选文件，检查 Cookie 名称，强制使用候选 Cookie 和 PO/标准 Cookie 策略解析给定链接，关闭递归自动刷新与匿名回退；成功后保留原 Cookie 为 `.previous`，以原子替换使新 Cookie 生效。失败不会替换现有生效文件，临时候选会清理。不要跳过停止步骤：浏览器运行时可能仍在轮换或写入 SQLite 会话。
+helper 会停止 Chromium、通过 Docker 确认停止，再在运行中的 bot 内执行导出。导出器创建同目录 0600 候选文件，检查 Cookie 名称，强制使用候选 Cookie 和明确的 Cookie 策略解析给定链接（启用可用 SABR 时用它，否则 PO/标准策略），关闭递归自动刷新与匿名回退；成功后保留原 Cookie 为 `.previous`，以原子替换使新 Cookie 生效。失败不会替换现有生效文件，临时候选会清理。不要跳过停止步骤：浏览器运行时可能仍在轮换或写入 SQLite 会话。
 
 所有 yt-dlp 调用使用 0700 临时目录中的 0600 Cookie 副本；调用期间的 Cookie 更新只写入该副本，正常退出、`SystemExit` 和 `SIGTERM` 时清理，避免较早启动的下载进程退出时覆盖刚刷新过的持久 Cookie。`SIGKILL` 或宿主断电无法保证即时清理；停服务后检查并清理容器临时目录中的 `amdl-ytdlp-cookies-*` 残留，不触碰持久 Cookie/profile。持久文件的正式更新走认证导出流程。
 
@@ -220,4 +263,4 @@ bash ops/stack.sh --profile auth rollback /srv/private-backups/youtube-upgrade
 
 分享诊断前删去 Cookie 值、完整 Cookie/profile、账号标识、token、代理认证、私有 URL、聊天 ID、完整环境配置及备份内容。正常日志会隐藏 Cookie 路径，并过滤常见代理 URL 中的用户名/密码；这不能保证任意上游输出都已完全脱敏。
 
-本次补充按本地维护源码核对并进行离线检查。济南 NAS 的 IPv6 直连不可达，尚未核对线上最新状态，也没有在真实账号上完成浏览器登录、字幕请求、媒体下载、播放或在线备份恢复验收。公开文档说明的是仓库实现与待验收步骤，不能据此认定生产服务已通过这些检查。
+首次整理时 NAS 的 IPv6 不可达；2026-10-21 已重新直连并完成[只读线上核验](LIVE_CHECK_20261021.md)，检查运行源码、挂载、私有文件权限、依赖与已有视频/字幕。线上尚未部署本仓库新增的 Cookie 回滚等改进；已将对应 SABR 专用工具整理为上述显式可选路径，默认关闭。此次没有启动登录浏览器、导出 Cookie、新建下载、播放或进行备份恢复，也未下载执行新加入的可选工具；不能据此认定这些验收已通过。

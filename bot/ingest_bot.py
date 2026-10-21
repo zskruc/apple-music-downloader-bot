@@ -6019,6 +6019,8 @@ def process_online_media_job(job: Job) -> None:
             )
     except Exception as exc:
         clear_active_task_process(job)
+        if preserve_job_for_restart(job):
+            return
         error_text = str(exc)
         if task_status(job) in {"stopping", "stopped"}:
             update_task_card(

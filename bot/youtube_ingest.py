@@ -105,6 +105,9 @@ HIGH_QUALITY_RETRY_DELAY_SECONDS = max(
     15,
     int(env("YT_HIGH_QUALITY_RETRY_DELAY_SECONDS", "60") or "60"),
 )
+SABR_FALLBACK_ENABLED = env_flag("YT_SABR_FALLBACK_ENABLED", False)
+SABR_TOOL_PATH = Path(env("YT_SABR_TOOL_PATH", "/app/vendor/yt-dlp-sabr/yt-dlp"))
+SABR_TOOL_SHA256 = "8e851af222deaeeced7a9444a3c961fa054dc850e92d400e3ff73110f7bd9f4d"
 COOKIE_SAFE_RUNNER_PATH = Path(
     env(
         "YT_COOKIE_SAFE_RUNNER_PATH",
@@ -269,6 +272,7 @@ class YouTubeAuthStrategy:
     use_cookies: bool
     use_po_token: bool
     player_client: str = ""
+    use_sabr: bool = False
 
 
 @dataclass(frozen=True)
@@ -436,6 +440,18 @@ def _ensure_po_token_provider() -> None:
     )
 
 
+def _sabr_tool_path() -> Path | None:
+    if not SABR_FALLBACK_ENABLED or not SABR_TOOL_PATH.is_file():
+        return None
+    try:
+        actual = hashlib.sha256(SABR_TOOL_PATH.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise YouTubeIngestError("专用 YouTube SABR 工具不可读取；未降低画质") from exc
+    if actual != SABR_TOOL_SHA256:
+        raise YouTubeIngestError("专用 YouTube SABR 工具完整性校验失败；未降低画质")
+    return SABR_TOOL_PATH
+
+
 def _youtube_auth_strategies() -> list[YouTubeAuthStrategy]:
     _, missing = _cookie_health()
     cookie_ready = not missing and COOKIE_PATH.is_file()
@@ -458,6 +474,16 @@ def _youtube_auth_strategies() -> list[YouTubeAuthStrategy]:
                     player_client="web_embedded",
                 )
             )
+            if _sabr_tool_path() is not None:
+                strategies.append(
+                    YouTubeAuthStrategy(
+                        name="cookies-sabr",
+                        use_cookies=True,
+                        use_po_token=True,
+                        player_client="web",
+                        use_sabr=True,
+                    )
+                )
         strategies.append(
             YouTubeAuthStrategy(
                 name="anonymous-embedded",
@@ -508,10 +534,16 @@ def _common_yt_dlp_args(
     strategy: YouTubeAuthStrategy,
     proxy_url: str | None = None,
 ) -> list[str]:
-    selected_proxy = PROXY_URL if proxy_url is None else proxy_url
-    command = [
-        sys.executable,
-        str(COOKIE_SAFE_RUNNER_PATH),
+    if strategy.use_sabr:
+        tool = _sabr_tool_path()
+        if tool is None:
+            raise YouTubeIngestError("专用 YouTube SABR 工具不可用；未降低画质")
+        command = [sys.executable, str(COOKIE_SAFE_RUNNER_PATH), "--sabr-tool", str(tool)]
+        selected_proxy = (LARGE_DOWNLOAD_PROXY_URL or PROXY_URL) if proxy_url is None else proxy_url
+    else:
+        command = [sys.executable, str(COOKIE_SAFE_RUNNER_PATH)]
+        selected_proxy = PROXY_URL if proxy_url is None else proxy_url
+    command.extend([
         "--no-color",
         "--socket-timeout",
         "30",
@@ -523,7 +555,7 @@ def _common_yt_dlp_args(
         "5",
         "--js-runtimes",
         "deno",
-    ]
+    ])
     if selected_proxy:
         command.extend(["--proxy", selected_proxy])
     if strategy.use_cookies:
@@ -533,7 +565,10 @@ def _common_yt_dlp_args(
         command.extend(
             [
                 "--extractor-args",
-                f"youtube:player_client={player_client}",
+                (
+                    "youtube:player_client=web;webpage_client=web;formats=duplicate"
+                    if strategy.use_sabr else f"youtube:player_client={player_client}"
+                ),
             ]
         )
     if strategy.use_po_token:
@@ -3084,11 +3119,18 @@ def _download_once(
             highest_downloaded = 0
             highest_percent = 0.0
             completed_quality_cycles = 0
+            sabr_download_attempted = False
             download_succeeded = False
             cycle_failure_details: list[str] = []
             while strategy_index < len(strategies):
                 _check_cancelled(cancel_observer)
                 strategy = strategies[strategy_index]
+                if strategy.use_sabr:
+                    if sabr_download_attempted:
+                        strategy_index += 1
+                        proxy_index = 0
+                        continue
+                    sabr_download_attempted = True
                 proxy_url = proxy_candidates[proxy_index]
                 attempt_index += 1
                 if strategy.use_po_token:

@@ -100,19 +100,62 @@ The bot image installs pinned yt-dlp, yt-dlp-ejs, the bgutil plugin, Deno and FF
 
 | Request path | Configuration and behavior |
 | --- | --- |
-| Metadata, size estimation, video subtitles, artwork | `YT_DOWNLOAD_PROXY_URL`; the template explicitly leaves it empty for direct access when no general proxy environment is configured |
+| Standard yt-dlp metadata, size estimation, video subtitles, artwork | `YT_DOWNLOAD_PROXY_URL`; the template explicitly leaves it empty for direct access when no general proxy environment is configured |
 | Large audio/video transfers | If `YT_LARGE_DOWNLOAD_PROXY_URL` is set, use it when size exceeds `YT_LARGE_DOWNLOAD_THRESHOLD_MIB=500` or is unknown; empty means use the normal route |
 | Retryable network download failures | Try a different configured route while preserving partial files within this attempt; identical routes are not tried twice |
 | Chromium login browser | Separate `YOUTUBE_BROWSER_ARGS`; add e.g. `--proxy-server=http://host.docker.internal:7890` if needed; it does not inherit the bot's download proxy |
 | Bot → PO health check | Direct container-network `/ping`, explicitly bypassing system proxies |
+| Explicitly enabled SABR strategy | Without an explicitly selected transfer proxy, prefer the large-transfer proxy, then the normal proxy; an explicit proxy takes precedence |
 | Beets metadata and LRCLIB lyrics | The normal `YT_DOWNLOAD_PROXY_URL`; local `YT_LRCAPI_URL` requests use urllib's normal environment-proxy rules |
 | Telegram, Apple, Bilibili | Their own settings; not implicitly controlled by the YouTube proxy |
 
 Size estimation defaults to 300 seconds (`YT_DOWNLOAD_SIZE_PROBE_TIMEOUT_SECONDS`). Only configure routes reachable from the containers. Host `127.0.0.1` refers to the container itself from inside a container; the template supplies `host.docker.internal` for host services. A proxy URL containing credentials is private: remove it from public commands, screenshots and issue reports.
 
-`YT_PLAYER_CLIENT=mweb` works with the PO provider. Normal probing can try cookie + PO, cookie + embedded, anonymous embedded and anonymous + PO strategies. Public content may work without cookies. Candidate-cookie checks force a cookie strategy and prohibit anonymous fallback, so public access alone cannot be mistaken for recovered login. Without the optional Docker socket, administrators must recover an unhealthy PO service through maintenance commands; the bot cannot start/restart it itself.
+`YT_PLAYER_CLIENT=mweb` works with the PO provider. Normal probing can try cookie + PO, cookie + embedded, anonymous embedded and anonymous + PO strategies; the conditions below add `cookies-sabr`. Public content may work without cookies. Candidate-cookie checks force a cookie strategy and prohibit anonymous fallback, so public access alone cannot be mistaken for recovered login. Without the optional Docker socket, administrators must recover an unhealthy PO service through maintenance commands; the bot cannot start/restart it itself.
 
 Review yt-dlp, EJS, Deno, the PO plugin/server and YouTube client behavior together when upgrading. Updating one dependency does not establish continued format/login compatibility. External requirements change; consult [yt-dlp's YouTube notes](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#youtube) and the [PO provider upstream](https://github.com/Brainicism/bgutil-ytdlp-pot-provider).
+
+### Explicitly optional SABR tool
+
+Normal images retain the pinned standard yt-dlp. **The SABR fork is not downloaded, installed or enabled by default.** To try the path corresponding to the specialized production tool, set private `.env`:
+
+```dotenv
+INSTALL_YT_SABR=true
+YT_SABR_FALLBACK_ENABLED=true
+YT_SABR_TOOL_PATH=/app/vendor/yt-dlp-sabr/yt-dlp
+```
+
+`INSTALL_YT_SABR` is a build argument forwarded by Compose; `YT_SABR_FALLBACK_ENABLED` is a runtime switch. Both default to `false`. Enabling runtime fallback does not install the executable, and installing it does not add it to download strategies. The fork runs through the same private-cookie snapshot runner rather than writing to persistent cookies directly.
+
+Adding `cookies-sabr` also requires a complete cookie chain, `YT_PO_TOKEN_ENABLED=true`, a nonempty provider address, and an installed tool matching the pinned SHA-256. Normal ordering is `cookies-po-token` → `cookies-embedded` → `cookies-sabr` → `anonymous-embedded` → `anonymous-po-token`; the successfully probed strategy can be preferred for the subsequent transfer. Each media-download attempt invokes SABR at most once even across two ordinary strategy cycles. A new attempt after browser recovery has a new budget. Independent subtitle requests may also use SABR and do not share that media-attempt limit.
+
+When enabled and verified, cookie export/rollback probes force `cookies-sabr` directly. Otherwise they force `cookies-po-token`, or `cookies-standard` when PO is disabled. All prohibit anonymous fallback and recursive refresh. A runtime integrity failure raises an explicit error rather than bypassing the hash check or executing a different tool.
+
+The build installer is `services/youtube/install_sabr_tool.py`. Pinned metadata is below; see [SABR_SOURCES.md](../services/youtube/SABR_SOURCES.md) for provenance and licenses.
+
+| Item | Pinned value |
+| --- | --- |
+| Tool version | `2026.08.19.233452` |
+| Source commit | `6ef0ae00f0a4e9dd042193b3f5a2bb28b5fc0ca6` |
+| Executable SHA-256 | `8e851af222deaeeced7a9444a3c961fa054dc850e92d400e3ff73110f7bd9f4d` |
+
+The upstream `sabr` release tag can move. A changed asset is rejected on SHA-256 mismatch rather than silently accepted; deliberately updating the pin requires a new source/compatibility review. The fork's Unlicense and bundled third-party licenses remain separate from this project's MIT license. Enabled images retain licenses and provenance under `/usr/share/doc/yt-dlp-sabr/`.
+
+For an existing deployment, build a candidate under a **new tag**, then use the existing single-service upgrade flow. Replace the example tag with an unused tag for each revision. The build command leaves the running bot alone; the subsequent `upgrade` performs the maintenance update:
+
+```sh
+docker build --build-arg INSTALL_YT_SABR=true \
+  --tag local/apple-music-downloader-bot:sabr-reviewed .
+# Pause submissions and wait for idle; retain actual deployment profile/socket options.
+bash ops/stack.sh --profile auth upgrade bot local/apple-music-downloader-bot:sabr-reviewed /srv/private-backups/youtube-sabr-upgrade
+bash ops/stack.sh probe
+# Revert the image if acceptance fails:
+bash ops/stack.sh --profile auth rollback /srv/private-backups/youtube-sabr-upgrade
+```
+
+`bash ops/stack.sh build bot` also forwards `.env` build arguments, but builds the tag selected by the current Compose/image override. Use it for a fresh deployment or after deliberately separating the build tag from the old image; do not overwrite the production tag with a candidate. `upgrade` reads runtime switches from `.env`. Review them before rolling back to an older image: image rollback does not restore `.env`.
+
+This optional strategy uses a prerelease fork. It does not guarantee SABR downloads, login, 4K/8K or particular client formats, and does not invent missing subtitles. The same quality selection, bounded retries and cancellation apply. Installation/version output is not a real-download acceptance test. This addition supplies public provenance, installation and offline checks only; the optional executable was not downloaded/executed, and existing NAS services were not changed or asked to download new media.
 
 ## 6. Persistent cookies and Chromium profile
 
@@ -148,7 +191,7 @@ bash services/youtube/youtube-auth.sh export 'https://www.youtube.com/watch?v=VI
 bash services/youtube/youtube-auth.sh status
 ```
 
-The helper stops Chromium, confirms its state through Docker and runs the exporter inside the existing bot. The exporter writes a same-directory 0600 candidate, checks required cookie names and probes the supplied URL with that candidate using cookie + PO or standard-cookie authentication. Recursive refresh and anonymous fallback are disabled. On success, it keeps the old file as `.previous` and atomically activates the candidate. Failure preserves the active file and removes temporary candidates. Stopping Chromium matters because the browser can otherwise rotate cookies or write its SQLite session during export.
+The helper stops Chromium, confirms its state through Docker and runs the exporter inside the existing bot. The exporter writes a same-directory 0600 candidate, checks required cookie names and probes the supplied URL using that candidate and an explicit cookie strategy: available/enabled SABR, otherwise cookie + PO or standard-cookie authentication. Recursive refresh and anonymous fallback are disabled. On success, it keeps the old file as `.previous` and atomically activates the candidate. Failure preserves the active file and removes temporary candidates. Stopping Chromium matters because the browser can otherwise rotate cookies or write its SQLite session during export.
 
 All yt-dlp invocations use 0600 cookie copies inside 0700 temporary directories. Cookie updates affect that copy, with cleanup on normal exit, `SystemExit` and `SIGTERM`. An older downloader cannot overwrite newly refreshed persistent cookies when it exits. `SIGKILL` or host power loss prevents guaranteed immediate cleanup; after stopping services, inspect/remove leftover `amdl-ytdlp-cookies-*` directories in container temporary storage, preserving persistent cookies/profiles. Persistent updates go through the authentication exporter.
 
@@ -220,4 +263,4 @@ Healthy containers, a working browser, required cookie names and successful meta
 
 Before sharing diagnostics, remove cookie values/files, full profiles, account IDs, tokens, proxy credentials, private URLs, chat IDs, expanded environments and backups. Normal logs hide cookie paths and filter common proxy-URL username/password fields, but arbitrary upstream output still needs review for sensitive details.
 
-This addition was checked against the local maintained source and offline checks. Direct IPv6 access to the Jinan NAS was unavailable. The latest deployed state was not verified, and no real-account browser login, caption fetch, media download/playback or live backup/restore acceptance was completed. These documents describe the repository and required acceptance steps; they do not establish that production passed them.
+IPv6 access was unavailable during initial preparation. A subsequent [read-only live check on 2026-10-21](LIVE_CHECK_20261021.md) inspected running source, mounts, private-file permissions, dependencies and existing video/subtitle files. Production has not deployed this repository's new Cookie rollback features. The corresponding specialized SABR tool is now an explicit, disabled-by-default option described above. This check did not start the login browser, export cookies, request a new download, play media or exercise backup/restore, and the newly added optional executable was not downloaded/executed; those acceptance tests remain pending.

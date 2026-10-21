@@ -74,6 +74,29 @@ in this repository. AppleMusicDecrypt has a separate
 Device credentials, DRM device blobs, authentication cookies, private keys,
 account sessions, music, videos, and downloaded lyrics are excluded.
 
+## Optional SABR prerelease tool
+
+The optional `INSTALL_YT_SABR=true` image build downloads the Unix zipimport
+asset from [bashonly/yt-dlp's SABR prerelease](https://github.com/bashonly/yt-dlp/releases/tag/sabr),
+version `2026.08.19.233452`, source commit
+[`6ef0ae00f0a4e9dd042193b3f5a2bb28b5fc0ca6`](https://github.com/bashonly/yt-dlp/commit/6ef0ae00f0a4e9dd042193b3f5a2bb28b5fc0ca6).
+The immutable SHA-256 pin is
+`8e851af222deaeeced7a9444a3c961fa054dc850e92d400e3ff73110f7bd9f4d`.
+It is not included in the source repository or downloaded by a default build.
+
+The upstream code uses the Unlicense. This release asset also bundles Meriyah
+under ISC and Astring under MIT, with their copyright and permission notices
+retained in the exact commit's license aggregation. Unmodified texts are at
+[licenses/yt-dlp-sabr-Unlicense.txt](licenses/yt-dlp-sabr-Unlicense.txt) and
+[licenses/yt-dlp-sabr-THIRD_PARTY_LICENSES.txt](licenses/yt-dlp-sabr-THIRD_PARTY_LICENSES.txt).
+The aggregation covers additional upstream variants; it is not a claim that
+every listed component is included in this Unix zipapp. These texts and
+[source/install metadata](services/youtube/SABR_SOURCES.md) are copied into
+`/usr/share/doc/yt-dlp-sabr/` in the image. The repository's root MIT license does
+not replace the tool or bundled components' terms. Separately packaged
+PyInstaller executables have different combined license requirements and are
+not the selected artifact.
+
 ## Optional LX / SQ backends
 
 [LXServer](https://github.com/XCQ0607/lxserver), version 2.1.2 at commit
