@@ -4,7 +4,7 @@
 
 用于自托管 NAS 的 Telegram / Synology Chat 媒体入库服务：接收链接或搜索请求，通过 GAMDL、yt-dlp 与本地 wrapper 服务处理任务，并将媒体、封面和歌词写入指定目录。
 
-这是从长期使用的 NAS 定制部署中整理的源码项目，包含服务代码、可移植部署模板与运维流程。**v0.2.0 新增一命令部署、完整私有备份与迁移恢复入口；真实 Docker / KVM 部署验收尚未运行，账号下载与播放仍需部署者验收。** 初始资料截至 2026-10-19，2026-10-21 已通过 IPv6 只读核对线上源码、挂载、依赖与已有媒体；[线上核对记录](docs/LIVE_CHECK_20261021.md)不能替代新安装验收。
+这是从长期使用的 NAS 定制部署中整理的源码项目，包含服务代码、可移植部署模板与运维流程。**v0.2.0 新增一命令部署、完整私有备份与迁移恢复入口；真实 Docker / KVM 部署验收尚未通过，账号下载与播放仍需部署者验收。** 初始资料截至 2026-10-19，2026-10-21 已通过 IPv6 只读核对线上源码、挂载、依赖与已有媒体；[线上核对记录](docs/LIVE_CHECK_20261021.md)不能替代新安装验收。
 
 ## 功能
 
@@ -42,10 +42,12 @@ flowchart TD
 
 ## 一命令部署
 
-准备 Linux amd64、可读写的 `/dev/kvm`、Docker Engine、Compose 2.20+、Python 3.8+、Git 和 curl；默认要求至少 50 GiB 可用磁盘、6 GiB 可用内存。使用专用本地目录，账号须能操作 Docker 和 KVM。v0.2.0 的 tag 和 source release 发布后：
+准备 Linux amd64、可读写的 `/dev/kvm`、Docker Engine、Compose 2.20+、Python 3.8+、Git 和 curl；默认要求至少 50 GiB 可用磁盘、6 GiB 可用内存。使用专用本地目录，账号须能操作 Docker 和 KVM。
+
+下例使用群晖 `/volume1` 数据卷，避免把服务和 VM 磁盘放到 DSM 系统盘。其他 Linux 或存储池请将路径替换为有足够空间的专用本地数据盘目录。v0.2.0 的 tag 和 source release 发布后运行：
 
 ```sh
-bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /srv/apple-music-downloader --with-media-servers'
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /volume1/docker/amdl-suite --with-media-servers'
 ```
 
 这会准备 Bot、wrapper / KVM VM、LX、SQ / MySQL / 网易 API、YouTube PO provider、两个歌词 worker、按需认证浏览器与自愈配置；`--with-media-servers` 额外部署 Navidrome、Emby、LrcAPI。播放器管理端口仅绑定回环。安装不会代填账号、2FA、授权音乐源或 Emby 向导；没有安全的聊天入口和健康 wrapper 时 Bot 保持停止，状态会列出待配置项。示例通过 sudo 安装，后续维护也使用相同权限。

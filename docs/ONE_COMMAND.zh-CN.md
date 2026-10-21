@@ -2,13 +2,17 @@
 
 [English](ONE_COMMAND.en.md) · [首页](../README.md)
 
-本指南对应 v0.2.0 的 `install.py`、`deploy/installer.py`、`deploy/manage.py` 和 `deploy/migration.py`。它管理一个专用目录和登记的 Compose 项目。**真实 Docker / KVM 安装、完整镜像归档恢复及账号下载验收尚未运行。** 合成测试和只读线上核对只能验证各自范围，不能作为部署成功的承诺。
+本指南对应 v0.2.0 的 `install.py`、`deploy/installer.py`、`deploy/manage.py` 和 `deploy/migration.py`。它管理一个专用目录和登记的 Compose 项目。**真实 Docker / KVM 安装、完整镜像归档恢复及账号下载验收尚未通过。** 合成测试和只读线上核对只能验证各自范围，不能作为部署成功的承诺。
 
 ## 1. 主机与安装范围
 
 需要 Linux amd64 / x86-64、Python 3.8+、Git、Docker Engine、Compose 插件 2.20+；在线引导示例另需 curl。安装账号须能访问 Docker daemon，并读写真实的 `/dev/kvm`；BIOS 虚拟化与 Synology KVM 模块由部署者事先准备。安装器不会安装宿主软件或修改 DSM 内核。
 
-默认预检要求安装盘至少 50 GiB 空闲、宿主至少 6 GiB 可用内存，VM 默认为 4 GiB 内存、2 CPU、32 GiB 虚拟磁盘。媒体、Docker 构建缓存、镜像归档和第二份完整备份另计空间。两个歌词模型约 1.65 GB。选用 `/srv/apple-music-downloader` 这类专用本地目录；不要选现有源码仓库、共享目录根、Documents、Desktop、iCloud 或符号链接。
+默认预检要求安装盘至少 50 GiB 空闲、宿主至少 6 GiB 可用内存，VM 默认为 4 GiB 内存、2 CPU、32 GiB 虚拟磁盘。媒体、Docker 构建缓存、镜像归档和第二份完整备份另计空间。两个歌词模型约 1.65 GB。选用 `/volume1/docker/amdl-suite` 这类专用本地目录；不要选现有源码仓库、共享目录根、Documents、Desktop、iCloud 或符号链接。
+
+续装会先核验容器实际归属、运行状态与 VM 当前内存配置。同一套服务已完整运行且不增加 VM 内存时，默认只要求 0.5 GiB 可用余量；恢复待切换、全部非任务写入服务已运行时要求 2 GiB。新增 profile、增加 VM 内存或缺少基础服务时仍使用完整门槛。私有配置可分别设置 `INSTALL_MIN_AVAILABLE_GIB`、`INSTALL_MIN_RESUME_AVAILABLE_GIB`、`INSTALL_MIN_RESTORE_AVAILABLE_GIB`；这些值只控制预检，不会分配或释放内存。
+
+本文以群晖 `/volume1` 数据卷为例：安装根 `/volume1/docker/amdl-suite`，恢复根 `/volume1/docker/amdl-suite-restored`，外部私有配置 `/volume1/docker/amdl-private`，备份 `/volume1/amdl-backups`。不要使用 DSM 的小容量系统盘。其他 Linux 或存储池请统一替换为有足够空间的专用本地数据盘路径；备份目录仍须在安装根及其备份源之外。
 
 完整安装准备以下服务；不传 `--with-media-servers` 时只省略最后一行：
 
@@ -29,19 +33,19 @@
 v0.2.0 tag 和 release 发布后，在目标 Linux 主机运行：
 
 ```sh
-bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /srv/apple-music-downloader --with-media-servers'
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /volume1/docker/amdl-suite --with-media-servers'
 ```
 
-引导器取固定版本的 `source.tar.gz` 和 SHA-256 清单，校验后放入 `source/`。`pipefail` 会保留 curl 下载失败的退出状态。示例通过 sudo 安装，后续维护同样使用 sudo，以便读取权限 0700 的安装根与私有配置；如果用具备 Docker/KVM 权限的专用非 root 账号安装，应始终沿用那个账号。网络及依赖准备失败会记录阶段，可用后文 `resume` 重试。没有填写聊天凭据时，它可以准备基础设施，Bot 保持停止。使用前可先下载并检查固定 tag 的 `install.py`；已经有源码时也可从源码目录运行 `sudo python3 install.py install --root /srv/apple-music-downloader --with-media-servers`。
+引导器取固定版本的 `source.tar.gz` 和 SHA-256 清单，校验后放入 `source/`。`pipefail` 会保留 curl 下载失败的退出状态。示例通过 sudo 安装，后续维护同样使用 sudo，以便读取权限 0700 的安装根与私有配置；如果用具备 Docker/KVM 权限的专用非 root 账号安装，应始终沿用那个账号。网络及依赖准备失败会记录阶段，可用后文 `resume` 重试。没有填写聊天凭据时，它可以准备基础设施，Bot 保持停止。使用前可先下载并检查固定 tag 的 `install.py`；已经有源码时也可从源码目录运行 `sudo python3 install.py install --root /volume1/docker/amdl-suite --with-media-servers`。
 
 安装会在用户机器上获取固定镜像、SQ 指定提交、模型、Ubuntu 基础盘和构建依赖。不会上传本地 SQ 源码或构建镜像。来源、摘要和各自许可见 [SOURCES](../deploy/SOURCES.md)；SQ 上游缺少可确认的许可证，自动化不授予重新分发权。
 
 ### 私有配置与第一次启用 Bot
 
-把[示例](../deploy/private-config.example.json)复制到源码外的私有位置，如 `/srv/amdl-private/private-config.json`，目录权限设为 0700、文件设为 0600，用编辑器填写。文件格式为 `{"env": {"大写配置名": "单行值"}}`，也接受布尔值和整数。示例的 `START_BOT=false` 用于先准备服务。不要把真实配置提交 GitHub、放进 source release 或作为命令行参数内容。
+把[示例](../deploy/private-config.example.json)复制到源码外的私有位置，如 `/volume1/docker/amdl-private/private-config.json`，目录权限设为 0700、文件设为 0600，用编辑器填写。文件格式为 `{"env": {"大写配置名": "单行值"}}`，也接受布尔值和整数。示例的 `START_BOT=false` 用于先准备服务。不要把真实配置提交 GitHub、放进 source release 或作为命令行参数内容。
 
 ```sh
-sudo python3 /srv/apple-music-downloader/source/install.py resume --root /srv/apple-music-downloader --config /srv/amdl-private/private-config.json
+sudo python3 /volume1/docker/amdl-suite/source/install.py resume --root /volume1/docker/amdl-suite --config /volume1/docker/amdl-private/private-config.json
 ```
 
 Telegram 需要自己的 `TELEGRAM_BOT_TOKEN` 和非空 `TELEGRAM_ALLOWED_CHAT_IDS`。Synology Chat 需要 `SYNOLOGY_CHAT_ENABLED=true`、outgoing token、允许用户列表和 incoming reply webhook。任何已启用但不安全的入口都会阻止 Bot 激活。Apple Music 另需有效订阅和 [wrapper / VM 初始化](../vm/README.md)；登录、密码、2FA 和设备授权由你完成。
@@ -73,17 +77,17 @@ YouTube Cookie 位于宿主 `data/state/youtube/cookies.txt`（容器 `/state/yo
 浏览器默认不常驻。完整套件已登记认证与自愈配置，安装后的 YouTube helper 会自动读取部署描述。`start` 可单独开浏览器；`status`、`export`、`rollback` 通过现有 Bot 执行，需要 Bot 已运行。首次尚处于 pending 时，先完成 Apple / 聊天入口配置与激活，再执行导出：
 
 ```sh
-sudo bash /srv/apple-music-downloader/source/services/youtube/youtube-auth.sh start
+sudo bash /volume1/docker/amdl-suite/source/services/youtube/youtube-auth.sh start
 # 完成手动登录且 Bot 已运行后，用有权访问的公开测试 URL 运行 export URL。
-sudo bash /srv/apple-music-downloader/source/services/youtube/youtube-auth.sh status
+sudo bash /volume1/docker/amdl-suite/source/services/youtube/youtube-auth.sh status
 ```
 
 ## 4. 待配置状态与播放器初始化
 
 ```sh
-sudo python3 /srv/apple-music-downloader/source/install.py status --root /srv/apple-music-downloader
-sudo python3 /srv/apple-music-downloader/source/install.py doctor --root /srv/apple-music-downloader
-sudo python3 /srv/apple-music-downloader/source/install.py resume --root /srv/apple-music-downloader --config /srv/amdl-private/private-config.json
+sudo python3 /volume1/docker/amdl-suite/source/install.py status --root /volume1/docker/amdl-suite
+sudo python3 /volume1/docker/amdl-suite/source/install.py doctor --root /volume1/docker/amdl-suite
+sudo python3 /volume1/docker/amdl-suite/source/install.py resume --root /volume1/docker/amdl-suite --config /volume1/docker/amdl-private/private-config.json
 ```
 
 `resume` 复用已完成阶段，重新评估配置、激活与服务检查，不重置数据库和账号。`status` 的 `installed` 表示安装阶段完成，`configured` 表示 Bot 激活条件满足，`infrastructure_ready` 仅反映登记服务的运行/health 状态。`ready` 保持 false，`readiness_scope` 明确真实下载另验；`pending` 可能保留按需 YouTube/哔哩哔哩登录和 LX 授权源的通用提醒，不能拿它自动推断登录已失效。
@@ -101,8 +105,8 @@ sudo python3 /srv/apple-music-downloader/source/install.py resume --root /srv/ap
 日常使用安装内的运维入口，它自动读取 `deployment.json`、私有 env、已登记 profiles 和镜像覆盖，无须重新拼 Compose 参数：
 
 ```sh
-sudo bash /srv/apple-music-downloader/source/ops/stack.sh status
-sudo bash /srv/apple-music-downloader/source/ops/stack.sh probe
+sudo bash /volume1/docker/amdl-suite/source/ops/stack.sh status
+sudo bash /volume1/docker/amdl-suite/source/ops/stack.sh probe
 ```
 
 不要直接在 `source/` 新建 `.env` 再启动第二套 Compose。单服务 `upgrade` 仍要求先构建/拉取独立新 tag，再用安装内运维入口；managed 覆盖保存在安装根 `config/images.compose.json`。普通手动模板的 `STATE_PATH/ops/images.compose.json` 是另一种布局。
@@ -112,7 +116,7 @@ sudo bash /srv/apple-music-downloader/source/ops/stack.sh probe
 先暂停聊天、LX/SQ 手动入口和外部提交。运行中的 Bot 任务、stopping 任务或歌词 leased 工作会阻止备份；尚未执行的 queued 任务允许保留。备份短暂停止登记项目的服务并检查数据静止，顺序包括先停 watchdog、Bot/worker，再停 SQ/MySQL 和 wrapper/VM。成功或失败都会尝试只恢复原本运行的服务，原本停止的浏览器或 Bot 保持停止。
 
 ```sh
-sudo python3 /srv/apple-music-downloader/source/install.py backup --root /srv/apple-music-downloader --destination /srv/amdl-backups/backup-20261021
+sudo python3 /volume1/docker/amdl-suite/source/install.py backup --root /volume1/docker/amdl-suite --destination /volume1/amdl-backups/backup-20261021
 ```
 
 **默认包含媒体和 Docker 镜像归档。** 还包括私有配置、持久状态、浏览器 profile、Cookie、wrapper 会话、VM、LX/SQ 数据及播放器配置；文件摘要与挂载覆盖清单用于恢复核对。目标必须是源目录外一个不存在的新目录。备份不会停止无关项目，也不自动接管独立 LX/SQ 项目；旧多项目迁移必须先明确登记项目与所有持久挂载，参见 `deploy.migration inventory` / `snapshot` 的帮助。
@@ -128,19 +132,19 @@ sudo python3 /srv/apple-music-downloader/source/install.py backup --root /srv/ap
 恢复使用新的专用根，不覆盖原安装。默认端口与旧实例相同，旧库也不能在最终快照后继续消耗队列。先暂停所有外部提交及会拉起旧服务的主机守护，再做带 `--leave-stopped` 的最终快照，验证后恢复；不要拿已恢复运行的日常备份点直接当最终切换点。下例使用已有公开源码入口，不需要把私有备份复制进源码：
 
 ```sh
-sudo python3 /srv/apple-music-downloader/source/install.py backup --root /srv/apple-music-downloader --destination /srv/amdl-backups/cutover-20261021 --leave-stopped
-sudo env PYTHONPATH=/srv/apple-music-downloader/source python3 -m deploy.migration verify /srv/amdl-backups/cutover-20261021
-sudo python3 /srv/apple-music-downloader/source/install.py restore --root /srv/apple-music-downloader-restored --bundle /srv/amdl-backups/cutover-20261021 --config /srv/amdl-private/private-config.json --with-media-servers
+sudo python3 /volume1/docker/amdl-suite/source/install.py backup --root /volume1/docker/amdl-suite --destination /volume1/amdl-backups/cutover-20261021 --leave-stopped
+sudo env PYTHONPATH=/volume1/docker/amdl-suite/source python3 -m deploy.migration verify /volume1/amdl-backups/cutover-20261021
+sudo python3 /volume1/docker/amdl-suite/source/install.py restore --root /volume1/docker/amdl-suite-restored --bundle /volume1/amdl-backups/cutover-20261021 --config /volume1/docker/amdl-private/private-config.json --with-media-servers
 ```
 
 确认最终备份成功并用 `status` 检查旧栈停止；失败时它可能已经自动恢复，先处理故障再切换。恢复若需保留选装播放器，显式传 `--with-media-servers`；仅有其归档数据不会自动选装服务。恢复先校验内容与覆盖记录，把数据放到新根并重新映射挂载；包含镜像时会 `docker load`、核对 image ID，并沿用归档服务镜像，避免重新构建/拉取这些服务。未包含的依赖仍需网络。恢复原始任务数据库，保留 queued 状态，不全量清队列；Bot 真正启动后由已有恢复逻辑处理可续任务，失败/中断任务仍需按状态检查。
 
 旧多项目部署的服务名不同时，在同一私有 JSON 中使用与 `env` 并列的 `restore_services` 对象，如 `{"env":{"START_BOT":false},"restore_services":{"legacy-vm":"legacy-wrapper","wrapper-adapter":"wrapper"}}`。键可为旧服务名，或用 `项目名/旧服务名`、`项目ID/旧服务名` 消除重名；示例只是命名格式，必须按自己的已审查快照填写。映射在后续 `resume` 中保留。未知持久服务、未选装的播放器、歧义映射、不同数据映射到同一挂载目标、不同镜像合并到同一服务或未匹配任何记录的映射，都会在写入恢复数据前拒绝。映射名称不验证旧镜像的接口兼容性；旧配置、容器挂载目标、镜像入口和账号状态仍需独立审查。
 
-**备份中的 `START_BOT=true` 不算切换批准。** 上例私有配置应保持 `START_BOT=false`。恢复尚未批准时，Bot、两个 watchdog、LX/SQ 应用和两个歌词 worker 都创建但保持停止；数据库、网易 API、wrapper、PO provider 和播放器可以运行以供检查。若当前 restore 调用的 JSON 已明确传入 `START_BOT=true`，就会当作批准，因此不要提前复用允许启动的生产配置。人工完成新根的配置、账号和挂载检查后，另外创建私有 `/srv/amdl-private/cutover.json`，内容为 `{"env":{"START_BOT":true}}`，文件权限 0600，再明确批准切换：
+**备份中的 `START_BOT=true` 不算切换批准。** 上例私有配置应保持 `START_BOT=false`。恢复尚未批准时，Bot、两个 watchdog、LX/SQ 应用和两个歌词 worker 都创建但保持停止；数据库、网易 API、wrapper、PO provider 和播放器可以运行以供检查。若当前 restore 调用的 JSON 已明确传入 `START_BOT=true`，就会当作批准，因此不要提前复用允许启动的生产配置。人工完成新根的配置、账号和挂载检查后，另外创建私有 `/volume1/docker/amdl-private/cutover.json`，内容为 `{"env":{"START_BOT":true}}`，文件权限 0600，再明确批准切换：
 
 ```sh
-sudo python3 /srv/apple-music-downloader-restored/source/install.py resume --root /srv/apple-music-downloader-restored --config /srv/amdl-private/cutover.json
+sudo python3 /volume1/docker/amdl-suite-restored/source/install.py resume --root /volume1/docker/amdl-suite-restored --config /volume1/docker/amdl-private/cutover.json
 ```
 
 恢复后的切换必须在这次调用的私有配置中显式传 true；只修改恢复出的 env 不会解除保护。批准会释放后台任务写入者，Bot 另须满足聊天 allowlist 和 wrapper health 条件。旧实例保持停止，使用新实例验证唯一轮询、持久任务、真实下载和播放；需要撤回时先停新实例，再人工评估旧状态与迁移后新增媒体，不能同时运行两份。若要并行检查新旧基础设施，必须先在私有配置中为所有发布端口分配不同值，仍不得同时运行相同账号的任务入口。
@@ -150,7 +154,7 @@ sudo python3 /srv/apple-music-downloader-restored/source/install.py resume --roo
 在联网机器从固定 v0.2.0 tag 保存 `install.py`，从同版本 release 保存 `source.tar.gz`、`source.tar.gz.sha256`、`release.json`，核对来源与摘要，再安全转移到目标主机。`install.py` 不是单独的 release asset。已知预期 SHA-256 后可离线安装源码并恢复私有备份：
 
 ```sh
-sudo python3 /mnt/amdl-release/install.py restore --root /srv/apple-music-downloader-restored --archive /mnt/amdl-release/source.tar.gz --sha256 EXPECTED_64_HEX_SHA256 --bundle /srv/amdl-backups/cutover-20261021 --config /srv/amdl-private/private-config.json --with-media-servers
+sudo python3 /mnt/amdl-release/install.py restore --root /volume1/docker/amdl-suite-restored --archive /mnt/amdl-release/source.tar.gz --sha256 EXPECTED_64_HEX_SHA256 --bundle /volume1/amdl-backups/cutover-20261021 --config /volume1/docker/amdl-private/private-config.json --with-media-servers
 ```
 
 `EXPECTED_64_HEX_SHA256` 必须替换为核对过的真实摘要。离线 source archive 只解决公开源码分发；新装的 apt/PyPI/Go/Git、SABR、模型、Ubuntu 与容器镜像仍可能需要联网。完整初始化后的私有快照加默认镜像归档可恢复保存的 VM、模型和服务镜像；缺项或尚未完成的初始化不能靠源码归档补齐。勿把私有备份混入公开 `source.tar.gz`。
@@ -160,7 +164,7 @@ sudo python3 /mnt/amdl-release/install.py restore --root /srv/apple-music-downlo
 从源码运行 `python3 scripts/check_repo.py` 与 `python3 scripts/run_tests.py` 验证文档/安全约束和合成用例。`install --dry-run` 只列阶段；`doctor --dry-run` 只列检查计划，都不证明 Docker/KVM 工作。真正的隔离基础设施验收应在空闲的 Linux amd64 KVM 主机用独立目录运行：
 
 ```sh
-sudo python3 -m deploy.acceptance --root /srv/amdl-acceptance --report /srv/amdl-acceptance-report.json --include-images
+sudo python3 -m deploy.acceptance --root /volume1/docker/amdl-acceptance --report /volume1/docker/amdl-acceptance-report.json --include-images
 ```
 
-该测试会真实构建/启动和备份/恢复专用测试服务，耗时、耗磁盘；不使用生产凭据，不发起新媒体任务。只可公开经过脱敏的 report，不能上传其私有目录、日志或备份。当前仓库已提供测试入口，**本轮尚未执行真实验收，不能声称已通过**。最后仍需按[运维验收清单](OPERATIONS.zh-CN.md#3-验收清单)使用自己的授权账号验证下载、字幕、扫描、播放和唯一轮询。
+该测试会真实构建/启动和备份/恢复专用测试服务，耗时、耗磁盘；不使用生产凭据，不发起新媒体任务。只可公开经过脱敏的 report，不能上传其私有目录、日志或备份。当前仓库已提供测试入口，**真实基础设施验收已开始但尚未通过**。最后仍需按[运维验收清单](OPERATIONS.zh-CN.md#3-验收清单)使用自己的授权账号验证下载、字幕、扫描、播放和唯一轮询。

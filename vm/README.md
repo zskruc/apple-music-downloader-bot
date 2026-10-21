@@ -6,6 +6,16 @@
 
 ## 首次初始化
 
+一命令安装已经启动 manager 模式的 VM，无须再复制 `.env` 或重新构建。使用安装根以外的私有 JSON 配置，按下文的隧道与 `Login` RPC 完成登录后，将 `WRAPPER_SINGLE_ENABLE=true`、你自己的 `WRAPPER_DEVICE_INFO` 和暂时的 `START_BOT=false` 写入该配置，再执行：
+
+托管示例使用群晖 `/volume1` 数据卷，避免占用 DSM 系统盘；其他 Linux 或存储池请将安装根和私有配置目录统一替换为有足够空间的专用本地数据盘路径。
+
+```sh
+sudo python3 /volume1/docker/amdl-suite/source/install.py resume --root /volume1/docker/amdl-suite --config /volume1/docker/amdl-private/private-config.json
+```
+
+`resume` 会应用改变的 VM 配置，保留虚拟机盘。等 wrapper 健康后，再在私有配置中允许 `START_BOT=true` 并运行同一命令。下面复制 `.env` 和手动构建的步骤仅适用于手动 Compose 部署。
+
 1. 复制 `.env.example` 为 `.env`，填写本机绝对路径；先保留 `WRAPPER_SINGLE_ENABLE=false`。默认固定 [Ubuntu 24.04 cloud image，2026-10-17 发布](https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img)，`UBUNTU_IMAGE_SHA256=04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94`。首次启动需要联网下载，缓存持久化到 `VM_DATA_PATH`；之后每次启动仍核验基础镜像缓存的 SHA-256。
 2. 在项目根目录运行 `bash ops/stack.sh build legacy-wrapper`，再运行 `bash ops/stack.sh up legacy-wrapper`。初始没有账户时，decrypt 端口未就绪，容器显示 `unhealthy` 是预期的；此阶段先只启动该服务。manager 的 gRPC 端口映射到 NAS 的 `127.0.0.1:18080`（可配置），不是网页。
 3. 通过受信任的 SSH 隧道访问该 loopback 端口，例如在管理电脑运行 `ssh -L 18080:127.0.0.1:18080 user@nas.example`。这只是通用示例，按实际服务器地址及安全连接策略修改。不要将 manager、SSH、account bridge 或 decrypt 端口公开到公网。
@@ -22,6 +32,10 @@
 This optional external runtime requires an **x86-64 Linux host with working `/dev/kvm`**. It is not a working configuration for macOS Docker Desktop, ARM NAS systems, or hosts without KVM. The template does not install host kernel modules or host daemons.
 
 The image builds the separate AGPL-3.0 wrapper-manager from the fixed upstream revision linked above and retains its license/source URL. No authenticated VM, wrapper binary, device files, tokens, or proprietary NAS image is distributed. The manager obtains external runtime material during operation/login; its separate licensing and compatibility must be checked by the operator.
+
+The one-command installer already starts the VM in manager mode. Do not create a second `.env` or rebuild it. Complete the private tunnel and `Login` RPC below, then set `WRAPPER_SINGLE_ENABLE=true`, your own `WRAPPER_DEVICE_INFO` and initially `START_BOT=false` in the external private JSON. Apply it with `sudo python3 /volume1/docker/amdl-suite/source/install.py resume --root /volume1/docker/amdl-suite --config /volume1/docker/amdl-private/private-config.json`. Changed VM settings are applied while preserving its disk. Once wrapper health succeeds, allow `START_BOT=true` and resume again. The `.env` and build steps below apply to manual Compose installations.
+
+Managed examples use Synology's `/volume1` data volume rather than the DSM system partition. For another Linux host or storage pool, substitute installation and private-config paths on a dedicated local data disk with sufficient space.
 
 Initialize with `WRAPPER_SINGLE_ENABLE=false` and configure local bind paths in `.env`. The default base image is pinned to the Ubuntu 24.04 cloud release dated 2026-10-17, with SHA-256 `04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94`. Run `bash ops/stack.sh build legacy-wrapper` and `bash ops/stack.sh up legacy-wrapper`. Before login, failing transport health is expected. Only the VM should be started at this stage. The loopback management endpoint is **gRPC**, not an HTTP UI.
 

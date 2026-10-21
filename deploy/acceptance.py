@@ -48,6 +48,14 @@ STAGE_DIAGNOSTIC_LOGS = {
     "activation": ("activate-restored-queue-services", "activate-bot-and-watchdogs", "hold-restored-task-writers", "hold-unconfigured-bot"),
 }
 
+FATAL_READINESS_ERRORS = frozenset({
+    "empty_credentials_bot_was_started",
+    "restored_task_writer_started_before_cutover",
+    "service_mount_leaves_new_installation_root",
+    "restored_mount_still_points_to_old_root",
+    "guest_ssh_port_not_owned_by_test_vm",
+})
+
 
 def credential_values(values):
     """Select credentials, never auth retry counts, flags, paths or image tags."""
@@ -292,7 +300,7 @@ class Harness:
         values.update({"TELEGRAM_BOT_TOKEN": "", "TELEGRAM_ALLOWED_CHAT_IDS": "", "SYNOLOGY_CHAT_ENABLED": "false",
                        "SYNOLOGY_CHAT_OUTGOING_TOKEN": "", "SYNOLOGY_CHAT_INCOMING_WEBHOOK_URL": "",
                        "START_BOT": "false", "WRAPPER_SINGLE_ENABLE": "false", "WRAPPER_DEVICE_INFO": "",
-                       "VM_MEMORY": "1536", "VM_CPUS": "2", "VM_DISK_SIZE": "8G", "WORD_LYRICS_NAS_THREADS": "2",
+                       "VM_MEMORY": "1536", "VM_CPUS": "1" if restore else "2", "VM_DISK_SIZE": "8G", "WORD_LYRICS_NAS_THREADS": "2",
                        "INSTALL_MIN_FREE_GIB": str(self.min_free_gib), "INSTALL_MIN_AVAILABLE_GIB": "4"})
         config = self.root / (root.name + "-private-config.json")
         atomic_json(config, {"env": values})
@@ -301,6 +309,14 @@ class Harness:
         if restore:
             command += ["--restore", str(restore)]
         self.command(command, root.name + "-install", timeout=14400, progress_root=root)
+
+    def reconfigure_original_vm(self):
+        config = self.root / "original-private-config.json"
+        value = read_json(config)
+        value["env"]["VM_CPUS"] = "1"
+        atomic_json(config, value)
+        self.command([sys.executable, str(self.source / "install.py"), "resume", "--root", str(self.original),
+                      "--config", str(config)], "original-config-resume", timeout=1800, progress_root=self.original)
 
     def http(self, port, path, accepted=(200,), payload=None, headers=None):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -380,7 +396,7 @@ class Harness:
                 if root == self.restored and (source == self.original or self.original in source.parents):
                     raise AcceptanceError("restored_mount_still_points_to_old_root")
 
-    def guest_check(self, root, rows, marker=None):
+    def guest_check(self, root, rows, marker=None, expected_cpus=None):
         values = read_env(root / "config/private.env")
         vm = next(row for row in rows if row["service"] == "legacy-wrapper")
         bindings = json.loads(self.command(["docker", "inspect", "--format", "{{json .NetworkSettings.Ports}}", vm["id"]],
@@ -395,6 +411,10 @@ class Harness:
                    "-o", "LogLevel=ERROR",
                    "-o", "UserKnownHostsFile=" + str(root / "state/acceptance-known-hosts"), "vmuser@127.0.0.1"]
         guest = "test \"$(uname -s)\" = Linux && systemctl is-active --quiet apple-wrapper-manager.service"
+        if expected_cpus is not None:
+            if not isinstance(expected_cpus, int) or not 1 <= expected_cpus <= 64:
+                raise AcceptanceError("invalid_expected_guest_cpu_count")
+            guest += " && test \"$(nproc)\" -eq " + str(expected_cpus)
         if marker is not None:
             # Marker is generated here as hex, never interpolated user input.
             if not all(character in "0123456789abcdef" for character in marker):
@@ -416,7 +436,7 @@ class Harness:
                 raise AcceptanceError("guest_manager_http2_settings_not_received")
         return result.stdout.strip()
 
-    def wait_ready(self, root, marker=None, writers_held=False):
+    def wait_ready(self, root, marker=None, writers_held=False, expected_cpus=None):
         deadline = time.monotonic() + self.timeout
         core_checked = False
         while time.monotonic() < deadline:
@@ -427,7 +447,7 @@ class Harness:
                     self.service_checks(root, rows, writers_held=writers_held)
                     core_checked = True
                 self.readiness_step = "real_guest_ssh_and_manager_service"
-                guest_marker = self.guest_check(root, rows, marker)
+                guest_marker = self.guest_check(root, rows, marker, expected_cpus=expected_cpus)
                 self.service_checks(root, rows, writers_held=writers_held)
                 self.result["checks"][root.name + ("_cutover_hold_and_infrastructure" if writers_held else "_core_and_media_http")] = True
                 self.result["checks"][root.name + "_real_guest_and_manager"] = True
@@ -436,6 +456,8 @@ class Harness:
             except (AcceptanceError, OSError, ValueError, urllib.error.URLError, StopIteration) as error:
                 self.result["last_readiness_failure"] = {"installation": root.name,
                     "step": getattr(self, "readiness_step", "container_inventory"), "category": safe_failure(error)}
+                if isinstance(error, AcceptanceError) and str(error) in FATAL_READINESS_ERRORS:
+                    raise
                 time.sleep(5)
         raise AcceptanceError("real_services_or_guest_readiness_timeout")
 
@@ -527,7 +549,7 @@ class Harness:
                     "stage": failed})
                 for label in STAGE_DIAGNOSTIC_LOGS.get(failed, ()):
                     candidates.append((root.name + ":" + failed + ":" + label, root / "state/logs" / (label + ".log")))
-            for label in (root.name + "-install", "restored-cutover-resume" if root == self.restored else ""):
+            for label in (root.name + "-install", "restored-cutover-resume" if root == self.restored else "original-config-resume"):
                 if label:
                     summaries.append((root.name + ":installer", self.root / "private-logs" / (label + ".log")))
         safe = []
@@ -563,6 +585,12 @@ class Harness:
                 # Create a marker before the guest check writes its copy.
                 marker = self.write_fixture()
                 self.wait_ready(self.original, marker=marker)
+                self.progress("configuration_resume")
+                self.reconfigure_original_vm()
+                if self.wait_ready(self.original, expected_cpus=1) != marker:
+                    raise AcceptanceError("vm_guest_marker_changed_after_reconfigure")
+                self.result["checks"].update({"configuration_resume_applied": True,
+                                              "vm_disk_preserved_after_reconfigure": True})
                 self.progress("offline_snapshot")
                 manifest = manage.backup(self.original, self.bundle, include_media=True,
                                          include_images=self.include_images, restart=False)

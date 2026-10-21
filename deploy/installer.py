@@ -14,7 +14,6 @@ import re
 import secrets
 import shutil
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
@@ -267,12 +266,11 @@ class Installer:
             existing = existing.parent
         if not os.access(str(existing), os.W_OK):
             raise RuntimeError("installation parent is not writable")
-        settings = dict(read_env(self.env_file), **self.config)
+        saved_values = read_env(self.env_file)
+        settings = dict(saved_values, **self.config)
         if shutil.disk_usage(str(existing)).free < int(settings.get("INSTALL_MIN_FREE_GIB", "50")) * 1024 ** 3:
             raise RuntimeError("insufficient free disk space; default requirement is 50 GiB")
         memory = available_memory_gib()
-        if memory < float(settings.get("INSTALL_MIN_AVAILABLE_GIB", "6")):
-            raise RuntimeError("insufficient available RAM; default requirement is 6 GiB")
         if not shutil.which("git"):
             raise RuntimeError("git is required to fetch the fixed SQ source revision")
         for path in (self.root, self.root / "config", self.root / "data", self.root / "private"):
@@ -286,7 +284,15 @@ class Installer:
             raise RuntimeError("Docker Compose 2.20 or newer is required")
         self.run(["docker", "info", "--format", "{{.ServerVersion}}"], "docker-daemon", timeout=30)
         self.run(["git", "--version"], "git-prerequisite", timeout=30)
-        self.check_existing_project()
+        owned = self.check_existing_project()
+        budget = self.running_suite_memory_budget(settings, owned) or "full"
+        key, default = {"resume": ("INSTALL_MIN_RESUME_AVAILABLE_GIB", "0.5"),
+                        "restore": ("INSTALL_MIN_RESTORE_AVAILABLE_GIB", "2"),
+                        "full": ("INSTALL_MIN_AVAILABLE_GIB", "6")}[budget]
+        required_memory = float(settings.get(key, default))
+        if memory < required_memory:
+            raise RuntimeError("insufficient available RAM; " + (budget + " headroom is below its configured threshold" if budget != "full"
+                               else "default requirement is 6 GiB"))
         values = dict(read_env(self.env_file), **self.config)
         ports = dict(PORTS)
         if self.media:
@@ -302,20 +308,53 @@ class Installer:
                         listener.bind(("127.0.0.1", int(values.get(key, default))))
                 except OSError:
                     raise RuntimeError(key + " is occupied; choose a different private config port") from None
-        return {"platform": "linux/amd64", "kvm": True, "compose": version, "available_memory_gib": round(memory, 2)}
+        return {"platform": "linux/amd64", "kvm": True, "compose": version, "available_memory_gib": round(memory, 2),
+                "memory_budget": budget, "required_available_memory_gib": required_memory}
+
+    def running_suite_memory_budget(self, settings, owned):
+        profiles = set(PROFILES) | ({"navidrome", "emby", "lrcapi"} if self.media else set())
+        if not self.descriptor or not profiles.issubset(self.descriptor.get("profiles", [])):
+            return None
+        expected = {"legacy-wrapper", "wrapper", "youtube-pot", "lxserver", "sq-mysql", "sq-neteasecloudmusicapi",
+                    "sqmusic-server", "word-lyrics-resolver", "word-lyrics-nas-aligner"}
+        if self.media:
+            expected.update({"navidrome", "emby", "lrcapi"})
+        running = {row["service"]: row for row in owned if row["running"]}
+        if expected.issubset(running):
+            budget = "resume"
+        elif (self.state.get("restore") and self.state.get("restored_needs_cutover")
+              and expected.difference(RESTORE_TASK_WRITERS).issubset(running)):
+            budget = "restore"
+        else:
+            return None
+        # Read only this non-secret setting from the verified owned VM. The
+        # saved env may already contain an unapplied change from a failed run.
+        result = self.run(["docker", "exec", running["legacy-wrapper"]["id"], "printenv", "VM_MEMORY"],
+                          "running-vm-memory", timeout=30, allow_failure=True)
+        try:
+            actual, desired = int(result.stdout.strip()), int(settings.get("VM_MEMORY", "4096"))
+        except (TypeError, ValueError):
+            return None
+        return budget if result.returncode == 0 and actual > 0 and 0 < desired <= actual else None
 
     def check_existing_project(self):
         result = self.run(["docker", "ps", "-a", "--filter", "label=com.docker.compose.project=" + self.project,
                            "--format", "{{.ID}}"], "project-ownership", timeout=30)
         ids = result.stdout.split()
+        owned = []
         if ids:
             if not self.descriptor:
                 raise RuntimeError("this project name already belongs to an unmanaged installation")
             for identifier in ids:
                 labels = self.run(["docker", "inspect", "--format", "{{json .Config.Labels}}", identifier],
                                   "container-ownership", timeout=30).stdout
-                if json.loads(labels or "{}").get(OWNER_LABEL) != self.owner:
+                labels = json.loads(labels or "{}")
+                if labels.get(OWNER_LABEL) != self.owner:
                     raise RuntimeError("refusing to manage a container owned by another installation")
+                running = self.run(["docker", "inspect", "--format", "{{json .State.Running}}", identifier],
+                                   "container-running-state", timeout=30).stdout.strip() == "true"
+                owned.append({"id": identifier, "service": labels.get("com.docker.compose.service"), "running": running})
+        return owned
 
     def install(self):
         if self.dry_run:
@@ -483,10 +522,10 @@ class Installer:
         values.update(self.config)
         values["PRIVATE_ENV_FILE"] = str(self.env_file)
         values["COMPOSE_PROJECT_NAME"] = self.project
+        approve_cutover = False
         if self.state.get("restored_needs_cutover"):
             if self.config.get("START_BOT", "").lower() == "true":
-                self.state["restored_needs_cutover"] = False
-                self.state["cutover_approved_at"] = time.time()
+                approve_cutover = True
             else:
                 values["START_BOT"] = "false"
         for role, key in (("primary", "WORD_LYRICS_NAS_WHISPER_MODEL"), ("fallback", "WORD_LYRICS_NAS_FALLBACK_MODEL")):
@@ -522,7 +561,6 @@ class Installer:
         for key in ("SQ_MYSQL_IMAGE", "SQ_NETEASE_IMAGE", "LX_IMAGE", "AUTH_BROWSER_IMAGE", "PO_PROVIDER_IMAGE"):
             if "@sha256:" not in values.get(key, ""):
                 raise RuntimeError(key + " requires a pinned image digest")
-        write_env(self.env_file, values)
         services = list(SERVICES)
         files = ["compose.yaml", "services/lx-music/compose.yaml", "services/sq-music/compose.yaml", "compose.self-heal.yaml"]
         profiles = list(PROFILES)
@@ -530,6 +568,24 @@ class Installer:
             files.append("services/media/compose.yaml")
             profiles += ["navidrome", "emby", "lrcapi"]
             services += ["navidrome", "emby", "lrcapi"]
+        added_profiles = set(profiles).difference(self.descriptor.get("profiles", []))
+        changed_configuration = bool(old) and values != old
+        if old and (changed_configuration or added_profiles):
+            from deploy.manage import require_idle
+            writers = {name: {} for name in ("bot", "word-lyrics-resolver", "word-lyrics-nas-aligner")}
+            require_idle([{"environment_path": self.env_file, "project_name": self.project}],
+                         {self.project: {"services": writers}})
+        # A completed services checkpoint describes the previous effective
+        # configuration. Preserve expensive source/build/model checkpoints,
+        # but ensure `up` applies the new VM mode and runtime environment.
+        invalidated = {"services"} if changed_configuration or added_profiles else set()
+        if added_profiles:
+            invalidated.add("pull")
+        self.state["completed"] = [stage for stage in self.state.get("completed", []) if stage not in invalidated]
+        write_env(self.env_file, values)
+        if approve_cutover:
+            self.state["restored_needs_cutover"] = False
+            self.state["cutover_approved_at"] = time.time()
         override = {"services": {name: {"labels": {OWNER_LABEL: self.owner}} for name in services}}
         # Restored named volumes and bind mounts keep their container targets.
         for mount in restore.get("mounts", []):
@@ -573,20 +629,15 @@ class Installer:
                 if key in {"YOUTUBE_BROWSER_PATH", "BILIBILI_BROWSER_PATH", "NAVIDROME_DATA_PATH", "EMBY_DATA_PATH", "LRCAPI_DATA_PATH"} or "MUSIC_PATH" in key or "VIDEO_PATH" in key:
                     if os.geteuid() == 0:
                         restored_media = bool(self.state.get("restore")) and key in media_keys
-                        mode = stat.S_IMODE(Path(value).stat().st_mode) if restored_media else None
                         os.chown(value, uid, gid)
                         if restored_media:
                             # Only freshly restored copies below this root are
                             # remapped. Keep restrictive modes, and change a
                             # validated internal symlink itself, not its target.
-                            os.chmod(value, mode)
                             for directory, directories, files in os.walk(value, followlinks=False):
                                 for name in directories + files:
                                     child = Path(directory) / name
-                                    metadata = child.lstat()
                                     os.lchown(str(child), uid, gid)
-                                    if not stat.S_ISLNK(metadata.st_mode):
-                                        os.chmod(str(child), stat.S_IMODE(metadata.st_mode), follow_symlinks=False)
                         elif self.state.get("restore") and key in {"YOUTUBE_BROWSER_PATH", "BILIBILI_BROWSER_PATH", "NAVIDROME_DATA_PATH", "EMBY_DATA_PATH", "LRCAPI_DATA_PATH"}:
                             # These are freshly restored copies, never the
                             # old NAS originals. Chromium's 0600 SQLite files

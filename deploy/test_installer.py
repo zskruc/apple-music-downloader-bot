@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import tempfile
 import unittest
 from unittest import mock
@@ -347,6 +348,90 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result["compose"], "2.20.1")
         self.assertFalse(self.root.exists())
 
+    def test_preflight_uses_existing_owned_runtime_for_memory_headroom(self):
+        core = {"legacy-wrapper", "wrapper", "youtube-pot", "lxserver", "sq-mysql", "sq-neteasecloudmusicapi",
+                "sqmusic-server", "word-lyrics-resolver", "word-lyrics-nas-aligner"}
+        cases = [
+            ("owned", 0.75, {}, core, True, False, "resume"),
+            ("fresh", 0.75, {}, set(), False, False, None),
+            ("descriptor-only", 0.75, {}, set(), True, False, None),
+            ("missing-core", 0.75, {}, core - {"word-lyrics-resolver"}, True, False, None),
+            ("more-vm-ram", 0.75, {"VM_MEMORY": "8192"}, core, True, False, None),
+            ("unapplied-memory-change", 0.75, {}, core, True, False, None),
+            ("new-profile", 0.75, {}, core | {"navidrome", "emby", "lrcapi"}, True, True, None),
+            ("custom-resume-minimum", 0.75, {"INSTALL_MIN_RESUME_AVAILABLE_GIB": "1"}, core, True, False, None),
+            ("explicit-fresh-override", 0.75, {"INSTALL_MIN_AVAILABLE_GIB": "0.5"}, set(), False, False, "full"),
+            ("held-restore", 2.25, {}, core - set(installer.RESTORE_TASK_WRITERS), True, False, "restore"),
+            ("held-restore-too-low", 0.75, {}, core - set(installer.RESTORE_TASK_WRITERS), True, False, None),
+            ("held-restore-missing-db", 2.25, {}, core - set(installer.RESTORE_TASK_WRITERS) - {"sq-mysql"}, True, False, None),
+        ]
+        for name, available, config, running, described, media, expected in cases:
+            with self.subTest(name=name):
+                self.root = self.base / name
+                subject = self.subject(with_media_servers=media)
+                subject.config.update(config)
+                installer.write_env(subject.env_file, {"VM_MEMORY": "8192" if name == "unapplied-memory-change" else "4096"})
+                if described:
+                    subject.descriptor = {"profiles": list(installer.PROFILES), "installation_id": subject.owner}
+                if name.startswith("held-restore"):
+                    subject.state.update({"restore": {"schema": 1}, "restored_needs_cutover": True})
+                services = core | running if described else set()
+                def run(command, **kwargs):
+                    self.calls.append((command, kwargs))
+                    if command[1:3] == ["compose", "version"]:
+                        output = "2.20.1\n"
+                    elif command[1] == "ps":
+                        output = "\n".join(sorted(services))
+                    elif command[1] == "inspect":
+                        service = command[-1]
+                        output = (json.dumps({installer.OWNER_LABEL: subject.owner, "com.docker.compose.service": service})
+                                  if command[-2] == "{{json .Config.Labels}}" else json.dumps(service in running))
+                    elif command[1] == "exec":
+                        self.assertEqual(command[-2:], ["printenv", "VM_MEMORY"])
+                        output = "4096\n"
+                    else:
+                        output = ""
+                    return subprocess.CompletedProcess(command, 0, output, "")
+                subject.runner = run
+                with mock.patch.object(installer.platform, "system", return_value="Linux"), \
+                        mock.patch.object(installer.platform, "machine", return_value="x86_64"), \
+                        mock.patch.object(installer.os, "access", return_value=True), \
+                        mock.patch.object(installer, "available_memory_gib", return_value=available), \
+                        mock.patch.object(installer.shutil, "which", return_value="/usr/bin/git"), \
+                        mock.patch.object(installer.shutil, "disk_usage", return_value=type("Disk", (), {"free": 100 * 1024 ** 3})()), \
+                        mock.patch.object(installer.socket, "socket"):
+                    if expected is None:
+                        with self.assertRaisesRegex(RuntimeError, "insufficient available RAM"):
+                            subject.preflight()
+                    else:
+                        result = subject.preflight()
+                        self.assertEqual(result["memory_budget"], expected)
+                        self.assertEqual(result["available_memory_gib"], available)
+                        self.assertEqual(result["required_available_memory_gib"], 2 if expected == "restore" else 0.5)
+
+    def test_low_ram_does_not_bypass_live_container_ownership_check(self):
+        subject = self.subject()
+        subject.descriptor = {"profiles": list(installer.PROFILES)}
+        def run(command, **kwargs):
+            if command[1:3] == ["compose", "version"]:
+                output = "2.20.1"
+            elif command[1] == "ps":
+                output = "foreign-vm"
+            elif command[1] == "inspect":
+                output = json.dumps({installer.OWNER_LABEL: "another-installation", "com.docker.compose.service": "legacy-wrapper"})
+            else:
+                output = ""
+            return subprocess.CompletedProcess(command, 0, output, "")
+        subject.runner = run
+        with mock.patch.object(installer.platform, "system", return_value="Linux"), \
+                mock.patch.object(installer.platform, "machine", return_value="x86_64"), \
+                mock.patch.object(installer.os, "access", return_value=True), \
+                mock.patch.object(installer, "available_memory_gib", return_value=0.75), \
+                mock.patch.object(installer.shutil, "which", return_value="/usr/bin/git"), \
+                mock.patch.object(installer.shutil, "disk_usage", return_value=type("Disk", (), {"free": 100 * 1024 ** 3})()):
+            with self.assertRaisesRegex(RuntimeError, "another installation"):
+                subject.preflight()
+
     def test_token_without_allowlist_is_never_activated(self):
         subject = self.subject()
         installer.write_env(subject.env_file, {"TELEGRAM_BOT_TOKEN": "synthetic-private"})
@@ -448,6 +533,93 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(calls.count("credentials"), 1)
         self.assertEqual(calls.count("build"), 2)
         self.assertEqual((self.root / "credential.fixture").read_text(), "synthetic-original")
+
+    def test_configuration_resume_applies_vm_mode_and_new_media_without_rebuilding(self):
+        source = self.fixture_source()
+        with (source / ".env.example").open("a") as handle:
+            handle.write("WRAPPER_SINGLE_ENABLE=false\nWRAPPER_DEVICE_INFO=\nVM_CPUS=2\n")
+        runtime, completed = {}, {"dependencies": 0, "build": 0, "pull": 0}
+        fail = {"services": False}
+
+        class RuntimeFixture(installer.Installer):
+            def preflight(self):
+                return {}
+            def stage_dependencies(self):
+                completed["dependencies"] += 1
+            def stage_build(self):
+                completed["build"] += 1
+            def stage_pull(self):
+                completed["pull"] += 1
+            def compose(self, *arguments, **options):
+                if arguments[0] == "up":
+                    if fail["services"]:
+                        fail["services"] = False
+                        raise RuntimeError("synthetic interrupted service apply")
+                    values = installer.read_env(self.env_file)
+                    for name in arguments:
+                        if name in set(installer.SERVICES) | {"navidrome", "emby", "lrcapi"}:
+                            runtime[name] = {"Service": name, "State": "running", "Health": "healthy"}
+                            if name == "legacy-wrapper":
+                                runtime[name]["single"] = values["WRAPPER_SINGLE_ENABLE"] == "true"
+                                runtime[name]["device"] = values["WRAPPER_DEVICE_INFO"]
+                return subprocess.CompletedProcess(arguments, 0, "")
+            def container_status(self):
+                return list(runtime.values())
+
+        config = self.base / "private-config.json"
+        config.write_text(json.dumps({"env": {"WRAPPER_SINGLE_ENABLE": True, "WRAPPER_DEVICE_INFO": "synthetic-device"}}))
+        stages = ["configuration", "dependencies", "build", "pull", "services", "activation", "verification"]
+        with mock.patch.object(installer, "STAGES", stages), redirect_stdout(io.StringIO()):
+            RuntimeFixture(self.root).install()
+            self.assertFalse(runtime["legacy-wrapper"]["single"])
+            fail["services"] = True
+            with self.assertRaisesRegex(RuntimeError, "interrupted service apply"):
+                RuntimeFixture(self.root, config=config).install()
+            self.assertFalse(runtime["legacy-wrapper"]["single"])
+            RuntimeFixture(self.root, config=config).install()
+            self.assertTrue(runtime["legacy-wrapper"]["single"])
+            self.assertEqual(runtime["legacy-wrapper"]["device"], "synthetic-device")
+            self.assertEqual(completed, {"dependencies": 1, "build": 1, "pull": 1})
+            RuntimeFixture(self.root, config=config, with_media_servers=True).install()
+        self.assertTrue(all(runtime[name]["State"] == "running" for name in ("navidrome", "emby", "lrcapi")))
+        self.assertEqual(completed, {"dependencies": 1, "build": 1, "pull": 2})
+
+    def test_active_bot_or_lyric_work_blocks_config_writes_but_queued_work_allows_resume(self):
+        for status in ("running", "stopping", "leased_alignment", "queued"):
+            with self.subTest(status=status):
+                self.root = self.base / ("installation-" + status)
+                self.fixture_source()
+                subject = self.subject()
+                subject.stage_configuration()
+                subject.state["completed"] = ["configuration", "services"]
+                subject.state["restored_needs_cutover"] = True
+                before = {path: path.read_bytes() for path in (subject.env_file, subject.descriptor_file, self.root / "config/installer.compose.json")}
+                values = installer.read_env(subject.env_file)
+                state = Path(values["STATE_PATH"])
+                lyric = status.startswith("leased_")
+                path = state / ("word-lyrics/automation/queue.sqlite3" if lyric else "task-cards.sqlite3")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                table = "jobs" if lyric else "task_cards"
+                with sqlite3.connect(path) as database:
+                    database.execute("CREATE TABLE " + table + " (status TEXT)")
+                    database.execute("INSERT INTO " + table + " VALUES (?)", (status,))
+                subject.config = {"WRAPPER_SINGLE_ENABLE": "true", "WRAPPER_DEVICE_INFO": "synthetic-device", "START_BOT": "true"}
+                previous_commands = len(self.calls)
+                if status != "queued":
+                    with self.assertRaisesRegex(RuntimeError, "Active bot or lyric"):
+                        subject.stage_configuration()
+                    self.assertEqual({path: path.read_bytes() for path in before}, before)
+                    self.assertEqual(len(self.calls), previous_commands)
+                    self.assertTrue(subject.state["restored_needs_cutover"])
+                    self.assertNotIn("cutover_approved_at", subject.state)
+                    self.assertIn("services", subject.state["completed"])
+                else:
+                    subject.stage_configuration()
+                    self.assertEqual(installer.read_env(subject.env_file)["WRAPPER_SINGLE_ENABLE"], "true")
+                    self.assertFalse(subject.state["restored_needs_cutover"])
+                    self.assertNotIn("services", subject.state["completed"])
+                with sqlite3.connect(path) as database:
+                    self.assertEqual(database.execute("SELECT status FROM " + table).fetchone()[0], status)
 
 
 if __name__ == "__main__":

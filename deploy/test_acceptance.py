@@ -123,6 +123,26 @@ class AcceptanceGuardTests(unittest.TestCase):
         self.assertEqual(acceptance.safe_failure(RuntimeError("Cookie: synthetic-secret")), "unexpected_runtimeerror")
         self.assertEqual(acceptance.safe_failure(acceptance.AcceptanceError("sq_initialization_not_applied")), "sq_initialization_not_applied")
 
+    def test_permanent_readiness_errors_fail_immediately_without_sleep(self):
+        for reason in acceptance.FATAL_READINESS_ERRORS:
+            with self.subTest(reason=reason):
+                harness = acceptance.Harness(self.base / "new", self.base / "report.json")
+                harness.save_states = mock.Mock(return_value=[{"service": "bot", "running": False, "started_at": "0001-01-01T00:00:00Z"}])
+                harness.service_checks = mock.Mock(side_effect=acceptance.AcceptanceError(reason))
+                with mock.patch.object(acceptance.time, "sleep") as sleep, self.assertRaisesRegex(acceptance.AcceptanceError, reason):
+                    harness.wait_ready(harness.original)
+                sleep.assert_not_called()
+                self.assertEqual(harness.service_checks.call_count, 1)
+
+    def test_startup_health_pending_still_retries_and_can_succeed(self):
+        harness = acceptance.Harness(self.base / "new", self.base / "report.json")
+        harness.save_states = mock.Mock(return_value=[{"service": "bot", "running": False, "started_at": "0001-01-01T00:00:00Z"}])
+        harness.service_checks = mock.Mock(side_effect=[acceptance.AcceptanceError("core_healthcheck_not_ready"), None, None])
+        harness.guest_check = mock.Mock(return_value="synthetic-marker")
+        with mock.patch.object(acceptance.time, "sleep") as sleep:
+            self.assertEqual(harness.wait_ready(harness.original), "synthetic-marker")
+        sleep.assert_called_once_with(5)
+
     def test_restore_hold_requires_every_writer_created_and_never_started(self):
         harness = acceptance.Harness(self.base / "new", self.base / "report.json")
         rows = [{"service": name, "running": False, "started_at": "0001-01-01T00:00:00Z"}

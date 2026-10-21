@@ -2,13 +2,17 @@
 
 [中文](ONE_COMMAND.zh-CN.md) · [Home](../README.en.md)
 
-This guide describes v0.2.0 `install.py`, `deploy/installer.py`, `deploy/manage.py` and `deploy/migration.py`. They manage a dedicated directory and explicitly recorded Compose projects. **Real Docker / KVM installation, complete image-archive restore and authenticated download acceptance have not been run.** Synthetic tests and a read-only live comparison establish only their respective scope.
+This guide describes v0.2.0 `install.py`, `deploy/installer.py`, `deploy/manage.py` and `deploy/migration.py`. They manage a dedicated directory and explicitly recorded Compose projects. **Acceptance has not yet passed for real Docker / KVM installation, complete image-archive restore or authenticated downloads.** Synthetic tests and a read-only live comparison establish only their respective scope.
 
 ## 1. Host and suite
 
 Use Linux amd64 / x86-64, Python 3.8+, Git, Docker Engine and the Compose plugin 2.20+. The online bootstrap example also uses curl. The installing account needs Docker daemon access and read/write access to a real `/dev/kvm`. Enable hardware virtualization and prepare any model-specific Synology KVM modules beforehand. The installer does not install host software or change the DSM kernel.
 
-Default preflight requires 50 GiB free on the installation disk and 6 GiB available host RAM. VM defaults are 4 GiB RAM, 2 CPUs and a 32 GiB virtual disk. Allow additional space for media, Docker build caches, image archives and another complete backup. The two lyric models total about 1.65 GB. Choose a dedicated local path such as `/srv/apple-music-downloader`, outside the source checkout, shared storage roots, Documents, Desktop, cloud-synced folders and symlinks.
+Default preflight requires 50 GiB free on the installation disk and 6 GiB available host RAM. VM defaults are 4 GiB RAM, 2 CPUs and a 32 GiB virtual disk. Allow additional space for media, Docker build caches, image archives and another complete backup. The two lyric models total about 1.65 GB. Choose a dedicated local path such as `/volume1/docker/amdl-suite`, outside the source checkout, shared storage roots, Documents, Desktop, cloud-synced folders and symlinks.
+
+Resume first verifies actual container ownership, running state and the VM's current memory setting. An already running complete suite with no VM memory increase requires 0.5 GiB available headroom by default; a restored suite awaiting cutover with all non-writer infrastructure running requires 2 GiB. New profiles, a VM memory increase or missing infrastructure retain the full threshold. Private configuration may set `INSTALL_MIN_AVAILABLE_GIB`, `INSTALL_MIN_RESUME_AVAILABLE_GIB` and `INSTALL_MIN_RESTORE_AVAILABLE_GIB`; these control preflight only, without allocating or releasing memory.
+
+Examples use Synology's `/volume1` data volume: installation at `/volume1/docker/amdl-suite`, restore at `/volume1/docker/amdl-suite-restored`, external private configuration at `/volume1/docker/amdl-private`, and backups at `/volume1/amdl-backups`. Avoid the small DSM system partition. On another Linux host or storage pool, consistently substitute dedicated local data-disk paths with sufficient space. Backups must remain outside the installation root and all backup sources.
 
 The full suite prepares these services. Omitting `--with-media-servers` omits only the last row:
 
@@ -29,19 +33,19 @@ The full installer enables unified music, LX/SQ, lyric automation/completion, au
 Once the v0.2.0 tag and release are published, run on the target Linux host:
 
 ```sh
-bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /srv/apple-music-downloader --with-media-servers'
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /volume1/docker/amdl-suite --with-media-servers'
 ```
 
-The bootstrap obtains the fixed release's `source.tar.gz` and SHA-256 file, verifies the archive and publishes `source/`. `pipefail` preserves curl download failures. These examples install with sudo and use sudo for maintenance to access mode-0700 private directories. If you install using a dedicated non-root account with Docker/KVM access, consistently use that account instead. Failed stages are recorded for `resume`. Infrastructure can be prepared without chat credentials; the bot stays stopped. You can first download and inspect the fixed-tag `install.py`. From an existing checkout, the local equivalent is `sudo python3 install.py install --root /srv/apple-music-downloader --with-media-servers`.
+The bootstrap obtains the fixed release's `source.tar.gz` and SHA-256 file, verifies the archive and publishes `source/`. `pipefail` preserves curl download failures. These examples install with sudo and use sudo for maintenance to access mode-0700 private directories. If you install using a dedicated non-root account with Docker/KVM access, consistently use that account instead. Failed stages are recorded for `resume`. Infrastructure can be prepared without chat credentials; the bot stays stopped. You can first download and inspect the fixed-tag `install.py`. From an existing checkout, the local equivalent is `sudo python3 install.py install --root /volume1/docker/amdl-suite --with-media-servers`.
 
 Installation obtains pinned images, an exact SQ source revision, models, an Ubuntu base disk and build dependencies on your machine. It does not push the locally fetched SQ source or built images. See [SOURCES](../deploy/SOURCES.md) for digests and component terms. SQ's audited upstream revision has no confirmed license; preparation does not grant redistribution rights.
 
 ### Private configuration and first activation
 
-Copy the [example](../deploy/private-config.example.json) outside the source tree, for example to `/srv/amdl-private/private-config.json`. Use directory mode 0700 and file mode 0600, then edit it locally. The format is `{"env":{"UPPERCASE_KEY":"single-line value"}}`; booleans and integers are also accepted. The example's `START_BOT=false` prepares services before polling. Never commit real configuration, package it in a source release, or put secret values directly in commands.
+Copy the [example](../deploy/private-config.example.json) outside the source tree, for example to `/volume1/docker/amdl-private/private-config.json`. Use directory mode 0700 and file mode 0600, then edit it locally. The format is `{"env":{"UPPERCASE_KEY":"single-line value"}}`; booleans and integers are also accepted. The example's `START_BOT=false` prepares services before polling. Never commit real configuration, package it in a source release, or put secret values directly in commands.
 
 ```sh
-sudo python3 /srv/apple-music-downloader/source/install.py resume --root /srv/apple-music-downloader --config /srv/amdl-private/private-config.json
+sudo python3 /volume1/docker/amdl-suite/source/install.py resume --root /volume1/docker/amdl-suite --config /volume1/docker/amdl-private/private-config.json
 ```
 
 Telegram requires your own `TELEGRAM_BOT_TOKEN` and a nonempty `TELEGRAM_ALLOWED_CHAT_IDS`. Synology Chat requires `SYNOLOGY_CHAT_ENABLED=true`, an outgoing token, a user allowlist and an incoming reply webhook. Any enabled but unsafe entry point blocks activation. Apple Music additionally requires a valid subscription and [wrapper / VM initialization](../vm/README.md). Complete passwords, 2FA and device authorization yourself.
@@ -73,17 +77,17 @@ YouTube cookies live at host `data/state/youtube/cookies.txt`, container `/state
 Browsers normally stay stopped. In a managed installation the YouTube helper automatically reads recorded authentication/recovery configuration. `start` opens the browser independently; `status`, `export` and `rollback` execute through the existing bot and require it to be running. During initial pending setup, complete Apple/chat activation before exporting:
 
 ```sh
-sudo bash /srv/apple-music-downloader/source/services/youtube/youtube-auth.sh start
+sudo bash /volume1/docker/amdl-suite/source/services/youtube/youtube-auth.sh start
 # After manual login, with the bot running, use export URL with an authorized public test URL.
-sudo bash /srv/apple-music-downloader/source/services/youtube/youtube-auth.sh status
+sudo bash /volume1/docker/amdl-suite/source/services/youtube/youtube-auth.sh status
 ```
 
 ## 4. Pending setup and players
 
 ```sh
-sudo python3 /srv/apple-music-downloader/source/install.py status --root /srv/apple-music-downloader
-sudo python3 /srv/apple-music-downloader/source/install.py doctor --root /srv/apple-music-downloader
-sudo python3 /srv/apple-music-downloader/source/install.py resume --root /srv/apple-music-downloader --config /srv/amdl-private/private-config.json
+sudo python3 /volume1/docker/amdl-suite/source/install.py status --root /volume1/docker/amdl-suite
+sudo python3 /volume1/docker/amdl-suite/source/install.py doctor --root /volume1/docker/amdl-suite
+sudo python3 /volume1/docker/amdl-suite/source/install.py resume --root /volume1/docker/amdl-suite --config /volume1/docker/amdl-private/private-config.json
 ```
 
 `resume` reuses completed stages and re-evaluates configuration, activation and service checks without resetting databases or accounts. `installed` means installation stages completed. `configured` means bot activation requirements passed. `infrastructure_ready` reflects only recorded container state/health. `ready` remains false and `readiness_scope` separates real downloads. `pending` may retain generic optional YouTube/Bilibili login and authorized LX-source reminders; these do not automatically diagnose an expired login.
@@ -101,8 +105,8 @@ The installer does not fabricate Navidrome/Emby users or API keys. To let the bo
 Use the installed operations entry point. It automatically reads `deployment.json`, private environment, recorded profiles and image overrides:
 
 ```sh
-sudo bash /srv/apple-music-downloader/source/ops/stack.sh status
-sudo bash /srv/apple-music-downloader/source/ops/stack.sh probe
+sudo bash /volume1/docker/amdl-suite/source/ops/stack.sh status
+sudo bash /volume1/docker/amdl-suite/source/ops/stack.sh probe
 ```
 
 Do not create another `.env` in `source/` and start a second Compose stack. Single-service `upgrade` still requires an independently tagged image built/pulled first. Managed image overrides live at root `config/images.compose.json`; the manual template uses `STATE_PATH/ops/images.compose.json` instead.
@@ -112,7 +116,7 @@ Do not create another `.env` in `source/` and start a second Compose stack. Sing
 Pause chat, manual LX/SQ entry points and other submissions. Running/stopping bot jobs or leased lyric work block backup; queued jobs may be preserved. Backup briefly stops recorded services and verifies quiescence, stopping watchdogs and bot/workers before SQ/MySQL and wrapper/VM. Success or failure triggers an attempt to restart only services that were running. Originally stopped browsers or bots stay stopped.
 
 ```sh
-sudo python3 /srv/apple-music-downloader/source/install.py backup --root /srv/apple-music-downloader --destination /srv/amdl-backups/backup-20261021
+sudo python3 /volume1/docker/amdl-suite/source/install.py backup --root /volume1/docker/amdl-suite --destination /volume1/amdl-backups/backup-20261021
 ```
 
 **Media and Docker image archives are included by default.** Private configuration, persistent state, browser profiles, cookies, wrapper sessions, VM, LX/SQ data and player configuration are also covered. File digests and a mount-coverage ledger support restore validation. Choose a new destination outside all sources. Backup does not stop unrelated projects or automatically adopt independently deployed LX/SQ projects. Older multi-project migrations require explicit project/mount inventory; see `deploy.migration inventory` / `snapshot` help.
@@ -128,19 +132,19 @@ Backups are unencrypted and contain complete credentials, login state and media.
 Restore into a new dedicated root, preserving the original installation. Default ports overlap, and the old database must not consume jobs after the final checkpoint. Pause external submissions and host supervisors, then take a final `--leave-stopped` snapshot and verify it before restoring. An ordinary backup that resumed the original services is not a frozen cutover point. This example uses an existing public source entry point without copying private backups into source:
 
 ```sh
-sudo python3 /srv/apple-music-downloader/source/install.py backup --root /srv/apple-music-downloader --destination /srv/amdl-backups/cutover-20261021 --leave-stopped
-sudo env PYTHONPATH=/srv/apple-music-downloader/source python3 -m deploy.migration verify /srv/amdl-backups/cutover-20261021
-sudo python3 /srv/apple-music-downloader/source/install.py restore --root /srv/apple-music-downloader-restored --bundle /srv/amdl-backups/cutover-20261021 --config /srv/amdl-private/private-config.json --with-media-servers
+sudo python3 /volume1/docker/amdl-suite/source/install.py backup --root /volume1/docker/amdl-suite --destination /volume1/amdl-backups/cutover-20261021 --leave-stopped
+sudo env PYTHONPATH=/volume1/docker/amdl-suite/source python3 -m deploy.migration verify /volume1/amdl-backups/cutover-20261021
+sudo python3 /volume1/docker/amdl-suite/source/install.py restore --root /volume1/docker/amdl-suite-restored --bundle /volume1/amdl-backups/cutover-20261021 --config /volume1/docker/amdl-private/private-config.json --with-media-servers
 ```
 
 Confirm snapshot success and use `status` to verify the old stack is stopped. Failure may have restarted it; resolve that before cutover. Pass `--with-media-servers` explicitly to restore optional players; their archived data alone does not select the services. Restore verifies contents and coverage, publishes data under the new root and remaps mounts. Included images are loaded, checked against image IDs and reused for archived services rather than built/pulled again. Missing dependencies may still need network access. The original task database and queued states are retained rather than clearing all jobs. After activation, existing recovery logic handles resumable work; inspect interrupted/failed jobs individually.
 
 When older multi-project service names differ, use a top-level `restore_services` object beside `env` in the same private JSON, for example `{"env":{"START_BOT":false},"restore_services":{"legacy-vm":"legacy-wrapper","wrapper-adapter":"wrapper"}}`. Keys accept an old service name or `project-name/old-service` / `project-id/old-service` for disambiguation. These are naming examples; fill them from your reviewed bundle. The mapping persists for later `resume`. Unknown persistent services, unselected media services, ambiguous mappings, conflicting data at one mount target, different images merged into one service, or mappings matching no record are rejected before restored data is written. Renaming a service does not validate old image compatibility; independently review configuration, mount targets, image entry points and account state.
 
-**Saved `START_BOT=true` is not cutover approval.** Keep `START_BOT=false` in the private configuration above. Without approval, the bot, both watchdogs, LX/SQ applications and both lyric workers are created but stopped; databases, NetEase API, wrapper, PO provider and players can run for inspection. An explicit `START_BOT=true` in the current restore invocation's JSON already counts as approval, so do not prematurely reuse a production configuration that permits activation. After checking the new root's configuration, accounts and mounts, create a separate mode-0600 `/srv/amdl-private/cutover.json` containing `{"env":{"START_BOT":true}}`. Explicitly approve cutover:
+**Saved `START_BOT=true` is not cutover approval.** Keep `START_BOT=false` in the private configuration above. Without approval, the bot, both watchdogs, LX/SQ applications and both lyric workers are created but stopped; databases, NetEase API, wrapper, PO provider and players can run for inspection. An explicit `START_BOT=true` in the current restore invocation's JSON already counts as approval, so do not prematurely reuse a production configuration that permits activation. After checking the new root's configuration, accounts and mounts, create a separate mode-0600 `/volume1/docker/amdl-private/cutover.json` containing `{"env":{"START_BOT":true}}`. Explicitly approve cutover:
 
 ```sh
-sudo python3 /srv/apple-music-downloader-restored/source/install.py resume --root /srv/apple-music-downloader-restored --config /srv/amdl-private/cutover.json
+sudo python3 /volume1/docker/amdl-suite-restored/source/install.py resume --root /volume1/docker/amdl-suite-restored --config /volume1/docker/amdl-private/cutover.json
 ```
 
 The current invocation's private config must explicitly supply true; editing the restored environment alone does not release the hold. Approval releases background task writers; the bot additionally needs chat allowlists and wrapper health. Keep the old instance stopped while validating a single poller, persisted jobs, real downloads and playback. To revert, stop the new instance first and assess the old state and newly written media. Parallel infrastructure inspection requires different values for every published port, and still must not run duplicate account task entry points.
@@ -150,7 +154,7 @@ The current invocation's private config must explicitly supply true; editing the
 On a connected machine, save `install.py` from the fixed v0.2.0 tag and `source.tar.gz`, `source.tar.gz.sha256` and `release.json` from that release. Check provenance and checksum, then transfer them securely. `install.py` is not a separate release asset. With a known expected SHA-256, the bootstrap can install public source and restore a private bundle offline:
 
 ```sh
-sudo python3 /mnt/amdl-release/install.py restore --root /srv/apple-music-downloader-restored --archive /mnt/amdl-release/source.tar.gz --sha256 EXPECTED_64_HEX_SHA256 --bundle /srv/amdl-backups/cutover-20261021 --config /srv/amdl-private/private-config.json --with-media-servers
+sudo python3 /mnt/amdl-release/install.py restore --root /volume1/docker/amdl-suite-restored --archive /mnt/amdl-release/source.tar.gz --sha256 EXPECTED_64_HEX_SHA256 --bundle /volume1/amdl-backups/cutover-20261021 --config /volume1/docker/amdl-private/private-config.json --with-media-servers
 ```
 
 Replace `EXPECTED_64_HEX_SHA256` with the verified digest. An offline source archive covers public code distribution only. Fresh apt/PyPI/Go/Git dependencies, SABR, models, Ubuntu and container images may still require network access. A fully initialized private snapshot plus the default image archive can recover its saved VM, models and service images. Missing components or unfinished initialization cannot be supplied by the source archive. Keep private backups out of public `source.tar.gz`.
@@ -160,7 +164,7 @@ Replace `EXPECTED_64_HEX_SHA256` with the verified digest. An offline source arc
 Run `python3 scripts/check_repo.py` and `python3 scripts/run_tests.py` from source for repository/document checks and synthetic tests. `install --dry-run` lists stages; `doctor --dry-run` lists planned checks. Neither tests Docker/KVM. Actual isolated infrastructure acceptance needs a disposable Linux amd64 KVM host and dedicated directory:
 
 ```sh
-sudo python3 -m deploy.acceptance --root /srv/amdl-acceptance --report /srv/amdl-acceptance-report.json --include-images
+sudo python3 -m deploy.acceptance --root /volume1/docker/amdl-acceptance --report /volume1/docker/amdl-acceptance-report.json --include-images
 ```
 
-This builds/starts and backs up/restores real dedicated test services, consuming time and storage. It uses no production credentials and submits no new media jobs. Publish only the sanitized report, never its private directories, logs or bundles. The harness exists; **it has not been run in this round, so acceptance is not claimed**. Use your authorized accounts to complete the [operations acceptance checklist](OPERATIONS.en.md#3-acceptance-tests) for downloads, subtitles, scans, playback and a single poller.
+This builds/starts and backs up/restores real dedicated test services, consuming time and storage. It uses no production credentials and submits no new media jobs. Publish only the sanitized report, never its private directories, logs or bundles. The harness exists; **real infrastructure acceptance is under way and has not yet passed**. Use your authorized accounts to complete the [operations acceptance checklist](OPERATIONS.en.md#3-acceptance-tests) for downloads, subtitles, scans, playback and a single poller.

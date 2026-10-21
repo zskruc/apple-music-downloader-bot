@@ -4,7 +4,7 @@
 
 A self-hosted Telegram / Synology Chat media ingestion service for a NAS. It accepts links and search requests, processes jobs through GAMDL, yt-dlp and a local wrapper service, and writes media, artwork and lyrics to configured folders.
 
-This repository packages a customized NAS deployment into source code, portable templates and operations tools. **v0.2.0 adds one-command installation, complete private backups and migration restore. Real Docker / KVM deployment acceptance has not been run; authenticated downloads and playback still need operator validation.** Initial maintenance material was dated through 2026-10-19. A read-only IPv6 check on 2026-10-21 compared live source, mounts, dependencies and existing media; that [live check](docs/LIVE_CHECK_20261021.md) does not establish fresh-install acceptance.
+This repository packages a customized NAS deployment into source code, portable templates and operations tools. **v0.2.0 adds one-command installation, complete private backups and migration restore. Real Docker / KVM deployment acceptance has not yet passed; authenticated downloads and playback still need operator validation.** Initial maintenance material was dated through 2026-10-19. A read-only IPv6 check on 2026-10-21 compared live source, mounts, dependencies and existing media; that [live check](docs/LIVE_CHECK_20261021.md) does not establish fresh-install acceptance.
 
 ## Features
 
@@ -26,10 +26,12 @@ Telegram / Synology Chat → bot → GAMDL → wrapper adapter → user-authoriz
 
 ## One-command deployment
 
-Use Linux amd64 with readable/writable `/dev/kvm`, Docker Engine, Compose 2.20+, Python 3.8+, Git and curl. Defaults require 50 GiB free disk and 6 GiB available RAM. Select a dedicated local directory and an account allowed to operate Docker and KVM. Once the v0.2.0 tag and source release are published:
+Use Linux amd64 with readable/writable `/dev/kvm`, Docker Engine, Compose 2.20+, Python 3.8+, Git and curl. Defaults require 50 GiB free disk and 6 GiB available RAM. Select a dedicated local directory and an account allowed to operate Docker and KVM.
+
+The example uses Synology's `/volume1` data volume to keep services and VM disks off the DSM system partition. On another Linux host or storage pool, substitute a dedicated local data-disk path with sufficient free space. Once the v0.2.0 tag and source release are published, run:
 
 ```sh
-bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /srv/apple-music-downloader --with-media-servers'
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /volume1/docker/amdl-suite --with-media-servers'
 ```
 
 This prepares the bot, wrapper / KVM VM, LX, SQ / MySQL / NetEase API, YouTube PO provider, two lyric workers, on-demand login browsers and recovery configuration. `--with-media-servers` adds Navidrome, Emby and LrcAPI with loopback-only management ports. Accounts, 2FA, authorized music sources and the Emby wizard remain manual. The bot stays stopped without a safe chat entry point and a healthy wrapper; status lists outstanding configuration. This example installs with sudo; use the same privileges for later maintenance.
