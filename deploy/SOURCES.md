@@ -6,6 +6,14 @@ SQ images, model weights, media, accounts, or third-party application bundles.
 Every image default in `dependencies.DEFAULT_IMAGES` uses a digest. No mutable
 tag is resolved during installation. Updating these pins requires review.
 
+The later full managed deployment passed real Linux amd64 Docker/KVM
+installation and image/media backup/restore at the recorded source revision:
+[acceptance evidence](../docs/DEPLOYMENT_ACCEPTANCE_20261021.md) and
+[persistent sanitized report](../docs/deployment-acceptance-20261021.json).
+The metadata-only preparation statements below describe the earlier review
+stage. The passed run does not establish account login, real downloads,
+subtitle quality, playback or every manual-template deployment variant.
+
 ## SQ bridge
 
 - Source: [SQ commit cf0f6ed136be0aa13845bbab028c27e404b89d5d](https://github.com/59799517/simple_sq_music_plus/tree/cf0f6ed136be0aa13845bbab028c27e404b89d5d).
@@ -166,7 +174,8 @@ approve task execution merely because the saved environment permitted it: the
 current invocation must explicitly approve `START_BOT=true` in private JSON.
 See the [deployment guide](../docs/ONE_COMMAND.en.md).
 
-The deployment acceptance harness and isolated CI workflow are provided, but a
-real Docker/KVM run and authenticated business acceptance have not yet been
-completed in this round. No fresh download, VM boot or playback result is
-claimed by the metadata records above.
+At the earlier metadata-only preparation stage, real Docker/KVM and
+authenticated business acceptance had not been completed. The later managed
+infrastructure result is linked above; account/download/playback acceptance
+remains separate. The metadata records themselves do not establish VM boot,
+real content downloads or playback.

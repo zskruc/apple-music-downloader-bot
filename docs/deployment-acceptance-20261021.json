@@ -1,0 +1,256 @@
+{
+  "checks": {
+    "configuration_resume_applied": true,
+    "included_media_preserved": true,
+    "lx_sq_credentials_preserved": true,
+    "original_bot_never_started": true,
+    "original_core_and_media_http": true,
+    "original_owned_containers_removed_before_restore": true,
+    "original_real_guest_and_manager": true,
+    "real_offline_snapshot_validated": true,
+    "restored_bot_never_started": true,
+    "restored_core_and_media_http": true,
+    "restored_cutover_hold_and_infrastructure": true,
+    "restored_mounts_relocated": true,
+    "restored_private_media_readable_by_selected_uid": true,
+    "restored_queue_held_before_approval": true,
+    "restored_queue_services_released_after_approval": true,
+    "restored_real_guest_and_manager": true,
+    "state_marker_preserved": true,
+    "synthetic_task_id_and_queued_state_preserved": true,
+    "vm_disk_preserved_after_reconfigure": true,
+    "vm_guest_disk_preserved": true
+  },
+  "container_states": {
+    "original": [
+      {
+        "health": null,
+        "running": false,
+        "service": "bilibili-auth-browser",
+        "state": "created"
+      },
+      {
+        "health": null,
+        "running": false,
+        "service": "bot",
+        "state": "created"
+      },
+      {
+        "health": null,
+        "running": false,
+        "service": "bot-watchdog",
+        "state": "created"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "emby",
+        "state": "running"
+      },
+      {
+        "health": "healthy",
+        "running": true,
+        "service": "legacy-wrapper",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "lrcapi",
+        "state": "running"
+      },
+      {
+        "health": "healthy",
+        "running": true,
+        "service": "lxserver",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "navidrome",
+        "state": "running"
+      },
+      {
+        "health": "healthy",
+        "running": true,
+        "service": "sq-mysql",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "sq-neteasecloudmusicapi",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "sqmusic-server",
+        "state": "running"
+      },
+      {
+        "health": "starting",
+        "running": true,
+        "service": "word-lyrics-nas-aligner",
+        "state": "running"
+      },
+      {
+        "health": "starting",
+        "running": true,
+        "service": "word-lyrics-resolver",
+        "state": "running"
+      },
+      {
+        "health": "starting",
+        "running": true,
+        "service": "wrapper",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": false,
+        "service": "wrapper-watchdog",
+        "state": "created"
+      },
+      {
+        "health": null,
+        "running": false,
+        "service": "youtube-auth-browser",
+        "state": "created"
+      },
+      {
+        "health": "healthy",
+        "running": true,
+        "service": "youtube-pot",
+        "state": "running"
+      }
+    ],
+    "restored": [
+      {
+        "health": null,
+        "running": false,
+        "service": "bilibili-auth-browser",
+        "state": "created"
+      },
+      {
+        "health": null,
+        "running": false,
+        "service": "bot",
+        "state": "created"
+      },
+      {
+        "health": null,
+        "running": false,
+        "service": "bot-watchdog",
+        "state": "created"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "emby",
+        "state": "running"
+      },
+      {
+        "health": "healthy",
+        "running": true,
+        "service": "legacy-wrapper",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "lrcapi",
+        "state": "running"
+      },
+      {
+        "health": "healthy",
+        "running": true,
+        "service": "lxserver",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "navidrome",
+        "state": "running"
+      },
+      {
+        "health": "healthy",
+        "running": true,
+        "service": "sq-mysql",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "sq-neteasecloudmusicapi",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": true,
+        "service": "sqmusic-server",
+        "state": "running"
+      },
+      {
+        "health": "starting",
+        "running": true,
+        "service": "word-lyrics-nas-aligner",
+        "state": "running"
+      },
+      {
+        "health": "starting",
+        "running": true,
+        "service": "word-lyrics-resolver",
+        "state": "running"
+      },
+      {
+        "health": "starting",
+        "running": true,
+        "service": "wrapper",
+        "state": "running"
+      },
+      {
+        "health": null,
+        "running": false,
+        "service": "wrapper-watchdog",
+        "state": "created"
+      },
+      {
+        "health": null,
+        "running": false,
+        "service": "youtube-auth-browser",
+        "state": "created"
+      },
+      {
+        "health": "healthy",
+        "running": true,
+        "service": "youtube-pot",
+        "state": "running"
+      }
+    ]
+  },
+  "containers_kept": false,
+  "duration_seconds": 776,
+  "images_in_bundle": true,
+  "kind": "real-docker-kvm-acceptance",
+  "last_readiness_failure": {
+    "category": "core_healthcheck_not_ready",
+    "installation": "restored",
+    "step": "core_container_states"
+  },
+  "not_tested": [
+    "Apple account login/decryption",
+    "YouTube/Bilibili account login and Cookie lifetime",
+    "real music/video download and highest formats",
+    "subtitle availability, bilingual timing and playback",
+    "authorized LX/SQ music providers",
+    "Telegram/Synology delivery",
+    "Emby/Navidrome account configuration"
+  ],
+  "passed": true,
+  "private_artifacts_uploaded": false,
+  "schema": 1,
+  "stage": "completed"
+}

@@ -4,7 +4,7 @@
 
 用于自托管 NAS 的 Telegram / Synology Chat 媒体入库服务：接收链接或搜索请求，通过 GAMDL、yt-dlp 与本地 wrapper 服务处理任务，并将媒体、封面和歌词写入指定目录。
 
-这是从长期使用的 NAS 定制部署中整理的源码项目，包含服务代码、可移植部署模板与运维流程。**v0.2.0 新增一命令部署、完整私有备份与迁移恢复入口；真实 Docker / KVM 部署验收尚未通过，账号下载与播放仍需部署者验收。** 初始资料截至 2026-10-19，2026-10-21 已通过 IPv6 只读核对线上源码、挂载、依赖与已有媒体；[线上核对记录](docs/LIVE_CHECK_20261021.md)不能替代新安装验收。
+这是从长期使用的 NAS 定制部署中整理的源码项目，包含服务代码、可移植部署模板与运维流程。**v0.2.0 新增一命令部署、完整私有备份与迁移恢复入口；隔离 Linux amd64 / KVM 环境已通过完整安装、配置续装、含镜像/媒体的备份与新根恢复验收；[证据与范围](docs/DEPLOYMENT_ACCEPTANCE_20261021.md)。账号登录、真实下载、字幕质量和播放仍需部署者验收。** 初始资料截至 2026-10-19，2026-10-21 已通过 IPv6 只读核对线上源码、挂载、依赖与已有媒体；[线上核对记录](docs/LIVE_CHECK_20261021.md)不能替代新安装验收。
 
 ## 功能
 
@@ -44,7 +44,7 @@ flowchart TD
 
 准备 Linux amd64、可读写的 `/dev/kvm`、Docker Engine、Compose 2.20+、Python 3.8+、Git 和 curl；默认要求至少 50 GiB 可用磁盘、6 GiB 可用内存。使用专用本地目录，账号须能操作 Docker 和 KVM。
 
-下例使用群晖 `/volume1` 数据卷，避免把服务和 VM 磁盘放到 DSM 系统盘。其他 Linux 或存储池请将路径替换为有足够空间的专用本地数据盘目录。v0.2.0 的 tag 和 source release 发布后运行：
+下例使用群晖 `/volume1` 数据卷，避免把服务和 VM 磁盘放到 DSM 系统盘。其他 Linux 或存储池请将路径替换为有足够空间的专用本地数据盘目录。运行 v0.2.0 固定版本：
 
 ```sh
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /volume1/docker/amdl-suite --with-media-servers'
@@ -69,7 +69,7 @@ python3 -m venv .venv
 .venv/bin/python scripts/run_tests.py
 ```
 
-上述步骤安装测试依赖；实际服务依赖见 `requirements.txt` 与 Dockerfile。测试使用合成数据与临时目录，Python socket 仅允许回环测试服务，禁止连接外部地址。隔离测试不能替代有效账号下载、VM 冷启动、媒体扫描和断电恢复验收。验证结果与来源说明见 [SOURCE_SNAPSHOT.md](docs/SOURCE_SNAPSHOT.md)。
+上述步骤安装测试依赖；实际服务依赖见 `requirements.txt` 与 Dockerfile。测试使用合成数据与临时目录，Python socket 仅允许回环测试服务，禁止连接外部地址。[真实部署验收](docs/DEPLOYMENT_ACCEPTANCE_20261021.md)另外覆盖 VM 启动、配置变更和完整备份恢复，但未测试账号登录、内容下载、字幕效果、播放或宿主断电恢复。验证历史与来源见 [SOURCE_SNAPSHOT.md](docs/SOURCE_SNAPSHOT.md)。
 
 ## 文档与许可
 
@@ -79,6 +79,7 @@ python3 -m venv .venv
 - [LX / SQ 配置与统一音乐](docs/MUSIC_SOURCES.zh-CN.md) · [English guide](docs/MUSIC_SOURCES.en.md)
 - [LX 后端部署](services/lx-music/README.md) · [SQ 后端部署与任务补丁](services/sq-music/README.md)
 - [YouTube Music、视频、字幕与 Cookie](docs/YOUTUBE.zh-CN.md) · [English guide](docs/YOUTUBE.en.md)
+- [部署与恢复验收记录](docs/DEPLOYMENT_ACCEPTANCE_20261021.md)
 - [源码与验证范围](docs/SOURCE_SNAPSHOT.md)
 - [敏感信息处理](SECURITY.md)
 - [第三方许可说明](THIRD_PARTY_NOTICES.md)

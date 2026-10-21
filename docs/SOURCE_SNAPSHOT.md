@@ -177,3 +177,40 @@ failure and atomic installer failure boundaries. CI additionally checks
 required image-source inclusion with an offline scratch build. The public
 Cookie recovery enhancements and optional installer were not deployed to NAS
 as part of this check.
+
+
+## One-command deployment and restore acceptance, 2026-10-21
+
+This is an appended record. Earlier sections retain the test counts and limits
+of their publication stages; they are not rewritten as claims about this run.
+
+The v0.2.0 full-suite installer adds staged resume, dedicated public source and
+private runtime directories, pinned dependencies, optional Navidrome/Emby/LrcAPI,
+complete private media/image backups, explicit service mapping and restore
+cutover protection. The runtime baseline at `1d4df6e` passed **733 isolated
+tests** and the distributable-source privacy check; this number is separate
+from real-container acceptance and must not be presented as account testing.
+
+The complete `--include-images` infrastructure run
+[39558116855](https://github.com/zskruc/apple-music-downloader-bot/actions/runs/39558116855)
+at [1d4df6e718851e811225563f9f5134eee46f2f5f](https://github.com/zskruc/apple-music-downloader-bot/commit/1d4df6e718851e811225563f9f5134eee46f2f5f)
+passed with a real Linux amd64 KVM guest. It covered fresh builds, guest/manager
+readiness, VM CPU configuration resume with disk preservation, an offline
+private snapshot including images/media, removal of the original containers,
+new-root restore, queued task preservation, held/released task writers and
+reading restored private media as the selected runtime UID/GID. See the
+[bilingual evidence and boundaries](DEPLOYMENT_ACCEPTANCE_20261021.md).
+
+No production login, content download, subtitle-quality or playback acceptance
+is inferred. The latest direct NAS SSH attempt timed out; this run did not
+export or migrate the current NAS. The earlier same-day read-only live check
+remains valid within its recorded scope. Restored paths may differ from fresh
+examples; generated private environment and deployment descriptors are the
+source of truth. Source archives remain public-code-only, while complete
+migration bundles contain credentials and must remain private.
+
+v0.2.0 的真实隔离基础设施验收已通过上述固定运行：安装、VM 配置续装、含镜像
+和媒体的私有快照、新根恢复、队列切换保护及实际运行 UID/GID 读取均在范围内。
+账号登录、真实下载、字幕质量与播放未测试；当前 NAS 的完整生产导出与迁移也
+没有完成。原有来源、历史测试数量和当时的验收限制保留不变，具体证据以新验收
+记录为准，恢复目录以生成的私有 env 与部署描述为准。

@@ -2,7 +2,7 @@
 
 [English](ONE_COMMAND.en.md) · [首页](../README.md)
 
-本指南对应 v0.2.0 的 `install.py`、`deploy/installer.py`、`deploy/manage.py` 和 `deploy/migration.py`。它管理一个专用目录和登记的 Compose 项目。**真实 Docker / KVM 安装、完整镜像归档恢复及账号下载验收尚未通过。** 合成测试和只读线上核对只能验证各自范围，不能作为部署成功的承诺。
+本指南对应 v0.2.0 的 `install.py`、`deploy/installer.py`、`deploy/manage.py` 和 `deploy/migration.py`。它管理一个专用目录和登记的 Compose 项目。**隔离 Linux amd64 / KVM 环境已通过真实构建、VM 启动与配置续装、含镜像和媒体的私有备份、新根恢复及切换保护验收。** 证据见[验收记录](DEPLOYMENT_ACCEPTANCE_20261021.md)。账号登录、真实下载、字幕质量和播放未测试；每台 NAS 的 KVM、权限与存储仍须本机验证。
 
 ## 1. 主机与安装范围
 
@@ -30,7 +30,7 @@
 
 ## 2. 一命令安装
 
-v0.2.0 tag 和 release 发布后，在目标 Linux 主机运行：
+在目标 Linux 主机运行 v0.2.0 固定版本：
 
 ```sh
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /volume1/docker/amdl-suite --with-media-servers'
@@ -70,9 +70,11 @@ Telegram 需要自己的 `TELEGRAM_BOT_TOKEN` 和非空 `TELEGRAM_ALLOWED_CHAT_I
 | `data/navidrome/`、`data/emby/`、`data/lrcapi/` | 可选播放器数据库和配置 |
 | `state/`、`cache/` | 安装检查点、维护状态、私有日志及可重试依赖缓存 |
 
+上表是新安装的默认路径。恢复时可能为保留原挂载关系使用不同的导入目录；以恢复根实际生成的 `config/private.env` 和 `deployment.json` 为准，并核对已登记挂载覆盖。不要为了匹配本表而手动移动恢复数据或重新填写旧根路径。
+
 安装器从 `--root` 派生托管路径，不接受将单个托管数据路径偷偷指回生产目录。个人既有媒体库不会自动导入；需要额外只读挂载时，参考[媒体配置示例](../services/media/personal-libraries.compose.example.yaml)并把叠加文件登记到部署描述和备份范围，先验证覆盖清单。不要将整个开发或数据目录同步到 iCloud。
 
-YouTube Cookie 位于宿主 `data/state/youtube/cookies.txt`（容器 `/state/youtube/cookies.txt`），上一份为 `cookies.txt.previous`；浏览器 profile 独立保存在 `private/youtube-browser/`。登录时按 [YouTube 指南](YOUTUBE.zh-CN.md)启动浏览器，通过回环端口/SSH 隧道手动完成登录，再由导出工具停浏览器、验证候选、原子替换并保留备份。失败不会发布未经验证的候选；运行下载时使用私有 Cookie 副本。profile 与 Cookie 只在各自持久目录保留，重建容器不会代替重新验证账号。
+新安装的 YouTube Cookie 位于宿主 `data/state/youtube/cookies.txt`（容器 `/state/youtube/cookies.txt`），上一份为 `cookies.txt.previous`；浏览器 profile 独立保存在 `private/youtube-browser/`。登录时按 [YouTube 指南](YOUTUBE.zh-CN.md)启动浏览器，通过回环端口/SSH 隧道手动完成登录，再由导出工具停浏览器、验证候选、原子替换并保留备份。失败不会发布未经验证的候选；运行下载时使用私有 Cookie 副本。profile 与 Cookie 只在各自持久目录保留，重建容器不会代替重新验证账号。
 
 浏览器默认不常驻。完整套件已登记认证与自愈配置，安装后的 YouTube helper 会自动读取部署描述。`start` 可单独开浏览器；`status`、`export`、`rollback` 通过现有 Bot 执行，需要 Bot 已运行。首次尚处于 pending 时，先完成 Apple / 聊天入口配置与激活，再执行导出：
 
@@ -167,4 +169,4 @@ sudo python3 /mnt/amdl-release/install.py restore --root /volume1/docker/amdl-su
 sudo python3 -m deploy.acceptance --root /volume1/docker/amdl-acceptance --report /volume1/docker/amdl-acceptance-report.json --include-images
 ```
 
-该测试会真实构建/启动和备份/恢复专用测试服务，耗时、耗磁盘；不使用生产凭据，不发起新媒体任务。只可公开经过脱敏的 report，不能上传其私有目录、日志或备份。当前仓库已提供测试入口，**真实基础设施验收已开始但尚未通过**。最后仍需按[运维验收清单](OPERATIONS.zh-CN.md#3-验收清单)使用自己的授权账号验证下载、字幕、扫描、播放和唯一轮询。
+该测试会真实构建/启动和备份/恢复专用测试服务，耗时、耗磁盘；不使用生产凭据，不发起新媒体任务。只可公开经过脱敏的 report，不能上传其私有目录、日志或备份。固定源码 `1d4df6e718851e811225563f9f5134eee46f2f5f` 的完整 `--include-images` 运行 `39558116855` 已通过[真实基础设施验收](DEPLOYMENT_ACCEPTANCE_20261021.md)。它使用合成任务/媒体标记并保持 Bot 未启动；通过不代表真实账号、下载、字幕质量、媒体库播放或断电恢复已验证。最后仍需按[运维验收清单](OPERATIONS.zh-CN.md#3-验收清单)使用自己的授权账号验证下载、字幕、扫描、播放和唯一轮询。

@@ -4,7 +4,7 @@
 
 A self-hosted Telegram / Synology Chat media ingestion service for a NAS. It accepts links and search requests, processes jobs through GAMDL, yt-dlp and a local wrapper service, and writes media, artwork and lyrics to configured folders.
 
-This repository packages a customized NAS deployment into source code, portable templates and operations tools. **v0.2.0 adds one-command installation, complete private backups and migration restore. Real Docker / KVM deployment acceptance has not yet passed; authenticated downloads and playback still need operator validation.** Initial maintenance material was dated through 2026-10-19. A read-only IPv6 check on 2026-10-21 compared live source, mounts, dependencies and existing media; that [live check](docs/LIVE_CHECK_20261021.md) does not establish fresh-install acceptance.
+This repository packages a customized NAS deployment into source code, portable templates and operations tools. **v0.2.0 adds one-command installation, complete private backups and migration restore. An isolated Linux amd64 / KVM run passed full installation, configuration resume, backup with images/media and restore into a new root; see the [evidence and scope](docs/DEPLOYMENT_ACCEPTANCE_20261021.md). Account login, real downloads, subtitle quality and playback still need operator validation.** Initial maintenance material was dated through 2026-10-19. A read-only IPv6 check on 2026-10-21 compared live source, mounts, dependencies and existing media; that [live check](docs/LIVE_CHECK_20261021.md) does not establish fresh-install acceptance.
 
 ## Features
 
@@ -28,7 +28,7 @@ Telegram / Synology Chat → bot → GAMDL → wrapper adapter → user-authoriz
 
 Use Linux amd64 with readable/writable `/dev/kvm`, Docker Engine, Compose 2.20+, Python 3.8+, Git and curl. Defaults require 50 GiB free disk and 6 GiB available RAM. Select a dedicated local directory and an account allowed to operate Docker and KVM.
 
-The example uses Synology's `/volume1` data volume to keep services and VM disks off the DSM system partition. On another Linux host or storage pool, substitute a dedicated local data-disk path with sufficient free space. Once the v0.2.0 tag and source release are published, run:
+The example uses Synology's `/volume1` data volume to keep services and VM disks off the DSM system partition. On another Linux host or storage pool, substitute a dedicated local data-disk path with sufficient free space. Run the fixed v0.2.0 release:
 
 ```sh
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /volume1/docker/amdl-suite --with-media-servers'
@@ -53,7 +53,7 @@ python3 -m venv .venv
 .venv/bin/python scripts/run_tests.py
 ```
 
-These steps install test dependencies; service dependencies are in `requirements.txt` and the Dockerfile. Tests use synthetic fixtures and temporary directories; Python socket connections are restricted to loopback fixtures, with external addresses blocked. Isolated tests do not replace authenticated downloads, VM cold starts, media scanning or power-loss recovery checks. See [SOURCE_SNAPSHOT.md](docs/SOURCE_SNAPSHOT.md) for provenance and validation limits.
+These steps install test dependencies; service dependencies are in `requirements.txt` and the Dockerfile. Tests use synthetic fixtures and temporary directories; Python socket connections are restricted to loopback fixtures, with external addresses blocked. Separate [real deployment acceptance](docs/DEPLOYMENT_ACCEPTANCE_20261021.md) covers VM boot, configuration changes and full backup/restore. It does not test account login, content downloads, subtitle quality, playback or host power-loss recovery. See [SOURCE_SNAPSHOT.md](docs/SOURCE_SNAPSHOT.md) for provenance and validation history.
 
 ## Documentation and licensing
 
@@ -63,6 +63,7 @@ These steps install test dependencies; service dependencies are in `requirements
 - [LX / SQ and unified music](docs/MUSIC_SOURCES.en.md) · [中文配置指南](docs/MUSIC_SOURCES.zh-CN.md)
 - [LX backend deployment](services/lx-music/README.md) · [SQ backend and task patch](services/sq-music/README.md)
 - [YouTube Music, video, subtitles and cookies](docs/YOUTUBE.en.md) · [中文指南](docs/YOUTUBE.zh-CN.md)
+- [Deployment and restore acceptance record](docs/DEPLOYMENT_ACCEPTANCE_20261021.md)
 - [Source snapshot and verification scope](docs/SOURCE_SNAPSHOT.md)
 - [Sensitive information handling](SECURITY.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)

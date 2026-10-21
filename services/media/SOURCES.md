@@ -6,6 +6,14 @@ independent (`navidrome`, `emby`, `lrcapi`) and disabled unless selected. Image
 digests were read from publisher Docker Hub APIs on 2026-10-21; no image was
 pulled or executed during preparation.
 
+A later complete managed installation ran these selected media services and
+checked their local HTTP endpoints as part of real Linux amd64 Docker/KVM
+backup/restore acceptance. See the [scoped acceptance record](../../docs/DEPLOYMENT_ACCEPTANCE_20261021.md)
+and [persistent sanitized report](../../docs/deployment-acceptance-20261021.json).
+This supplements the earlier metadata-only review. It does not verify player
+account setup, real library scanning/playback, external lyric quality or every
+manual overlay configuration.
+
 | Service | Reviewed release | Pinned multi-platform digest | Upstream terms |
 | --- | --- | --- | --- |
 | Navidrome | 0.64.2 | `sha256:38dc2727bfcfd5ede290f8ada114fc90368146f265ae4701ddddbcbe2a44ee52` | GPL-3.0, plus included components |

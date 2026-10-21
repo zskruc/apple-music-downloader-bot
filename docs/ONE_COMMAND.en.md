@@ -2,7 +2,7 @@
 
 [中文](ONE_COMMAND.zh-CN.md) · [Home](../README.en.md)
 
-This guide describes v0.2.0 `install.py`, `deploy/installer.py`, `deploy/manage.py` and `deploy/migration.py`. They manage a dedicated directory and explicitly recorded Compose projects. **Acceptance has not yet passed for real Docker / KVM installation, complete image-archive restore or authenticated downloads.** Synthetic tests and a read-only live comparison establish only their respective scope.
+This guide describes v0.2.0 `install.py`, `deploy/installer.py`, `deploy/manage.py` and `deploy/migration.py`. They manage a dedicated directory and explicitly recorded Compose projects. **An isolated Linux amd64 / KVM run passed real builds, VM boot/configuration resume, private backup including images/media, new-root restore and cutover protection.** See the [acceptance record](DEPLOYMENT_ACCEPTANCE_20261021.md). Account login, real downloads, subtitle quality and playback were not tested; each NAS still needs local KVM, permission and storage validation.
 
 ## 1. Host and suite
 
@@ -30,7 +30,7 @@ The full installer enables unified music, LX/SQ, lyric automation/completion, au
 
 ## 2. One-command installation
 
-Once the v0.2.0 tag and release are published, run on the target Linux host:
+Run the fixed v0.2.0 release on the target Linux host:
 
 ```sh
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /volume1/docker/amdl-suite --with-media-servers'
@@ -70,9 +70,11 @@ Supply your own external proxy URLs as needed through `TELEGRAM_PROXY_URL`, `AMD
 | `data/navidrome/`, `data/emby/`, `data/lrcapi/` | Optional player databases and configuration |
 | `state/`, `cache/` | Installation checkpoints, maintenance state, private logs and resumable dependency caches |
 
+The table lists fresh-install defaults. Restore may use different imported directories to preserve mount relationships. The restored root's generated `config/private.env` and `deployment.json`, together with recorded mount overrides, are authoritative. Do not move restored data or reintroduce old-root paths merely to match this table.
+
 Managed paths derive from `--root`; individual path overrides cannot silently point back into production. Existing personal libraries are not adopted automatically. For additional read-only mounts, use the [media example](../services/media/personal-libraries.compose.example.yaml), explicitly record the overlay and backup scope, and verify coverage first. Keep development and runtime directories outside cloud-synced document storage.
 
-YouTube cookies live at host `data/state/youtube/cookies.txt`, container `/state/youtube/cookies.txt`, with `cookies.txt.previous` for rollback. The persistent profile is separate at `private/youtube-browser/`. Follow the [YouTube guide](YOUTUBE.en.md): open the loopback browser through an SSH tunnel, log in manually, then have the export helper stop Chromium, validate a candidate, atomically replace the cookie file and retain its predecessor. Failed validation does not publish the candidate. Downloads use private cookie copies. Recreating containers preserves these directories but does not establish account validity.
+For a fresh install, YouTube cookies live at host `data/state/youtube/cookies.txt`, container `/state/youtube/cookies.txt`, with `cookies.txt.previous` for rollback. The persistent profile is separate at `private/youtube-browser/`. Follow the [YouTube guide](YOUTUBE.en.md): open the loopback browser through an SSH tunnel, log in manually, then have the export helper stop Chromium, validate a candidate, atomically replace the cookie file and retain its predecessor. Failed validation does not publish the candidate. Downloads use private cookie copies. Recreating containers preserves these directories but does not establish account validity.
 
 Browsers normally stay stopped. In a managed installation the YouTube helper automatically reads recorded authentication/recovery configuration. `start` opens the browser independently; `status`, `export` and `rollback` execute through the existing bot and require it to be running. During initial pending setup, complete Apple/chat activation before exporting:
 
@@ -167,4 +169,4 @@ Run `python3 scripts/check_repo.py` and `python3 scripts/run_tests.py` from sour
 sudo python3 -m deploy.acceptance --root /volume1/docker/amdl-acceptance --report /volume1/docker/amdl-acceptance-report.json --include-images
 ```
 
-This builds/starts and backs up/restores real dedicated test services, consuming time and storage. It uses no production credentials and submits no new media jobs. Publish only the sanitized report, never its private directories, logs or bundles. The harness exists; **real infrastructure acceptance is under way and has not yet passed**. Use your authorized accounts to complete the [operations acceptance checklist](OPERATIONS.en.md#3-acceptance-tests) for downloads, subtitles, scans, playback and a single poller.
+This builds/starts and backs up/restores real dedicated test services, consuming time and storage. It uses no production credentials and submits no new media jobs. Publish only the sanitized report, never its private directories, logs or bundles. The full `--include-images` run `39558116855` at `1d4df6e718851e811225563f9f5134eee46f2f5f` passed [real infrastructure acceptance](DEPLOYMENT_ACCEPTANCE_20261021.md). It uses synthetic task/media markers and keeps the bot stopped. It does not establish real account login, content downloads, subtitle quality, library playback or power-loss recovery. Use your authorized accounts to complete the [operations acceptance checklist](OPERATIONS.en.md#3-acceptance-tests) for downloads, subtitles, scans, playback and a single poller.
