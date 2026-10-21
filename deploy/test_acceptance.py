@@ -100,6 +100,36 @@ class AcceptanceGuardTests(unittest.TestCase):
         harness.safe_diagnostics()
         self.assertIn("sq_configuration:sq-schema-configure", harness.result["safe_build_diagnostics"][0])
 
+    def test_sq_prepare_literal_errors_become_codes_but_near_matches_stay_filtered(self):
+        harness = acceptance.Harness(self.base / "new", self.base / "report.json")
+        acceptance.atomic_json(harness.restored / "state/install.json", {"failed_stage": "credentials"})
+        from deploy.installer import write_env
+        write_env(harness.restored / "config/private.env", {"SQ_DB_PASSWORD": "synthetic-db-value"})
+        logs = harness.restored / "state/logs"
+        logs.mkdir()
+        messages = acceptance.SQ_PREPARE_ERROR_CATEGORIES
+        lines = []
+        for literal in messages:
+            lines.extend([literal, literal + ": synthetic-secret-value", "ERROR user text: " + literal + " synthetic-secret-value"])
+        lines += ["ERROR at " + str(harness.root / "private") + " synthetic-db-value",
+                  "ERROR password=synthetic-private-password"]
+        (logs / "sq-private-prepare.log").write_text("\n".join(lines) + "\n")
+        harness.safe_diagnostics()
+        diagnostics = "\n".join(harness.result["safe_build_diagnostics"])
+        for category in messages.values():
+            self.assertEqual(diagnostics.count(category), 1)
+        self.assertIn("ERROR at <workspace>/private <redacted>", diagnostics)
+        for private in ("synthetic-secret-value", "synthetic-private-password", "synthetic-db-value", str(harness.root)):
+            self.assertNotIn(private, diagnostics)
+
+    def test_sq_prepare_error_dictionary_contains_only_literal_bootstrap_failures(self):
+        tree = acceptance.ast.parse((acceptance.SOURCE / "services/sq-music/bootstrap.py").read_text())
+        literals = {node.args[0].value for node in acceptance.ast.walk(tree)
+                    if isinstance(node, acceptance.ast.Call) and isinstance(node.func, acceptance.ast.Name)
+                    and node.func.id == "SystemExit" and node.args and isinstance(node.args[0], acceptance.ast.Constant)
+                    and isinstance(node.args[0].value, str)}
+        self.assertTrue(set(acceptance.SQ_PREPARE_ERROR_CATEGORIES).issubset(literals))
+
     def test_install_progress_never_prints_arbitrary_private_state(self):
         harness = acceptance.Harness(self.base / "new", self.base / "report.json")
         acceptance.atomic_json(harness.original / "state/install.json", {

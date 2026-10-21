@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from contextlib import closing
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -194,6 +195,70 @@ class MySQLRuntimeSnapshotTests(SnapshotFixture):
 
 
 class OfflineSnapshotTests(SnapshotFixture):
+    def test_real_sq_prepare_after_snapshot_restore_keeps_isolated_auth_and_database_credentials(self):
+        from deploy import installer
+        service_names = {"browser": "youtube-auth-browser", "mysql": "sq-mysql"}
+        for old, new in service_names.items():
+            self.config["services"][new] = self.config["services"].pop(old)
+        for row in self.rows:
+            row["service"] = service_names.get(row["service"], row["service"])
+        staging = self.root / "sq-staging"
+        staging.mkdir()
+        auth = self.root / "sq-secrets/sq-auth.json"
+        auth.parent.mkdir()
+        auth.write_bytes(b'{ "username": "fixture-sq-user", "password": "fixture-original-auth" }\n')
+        lx_auth = self.root / "lx-secrets/frontend-auth"
+        lx_auth.parent.mkdir()
+        lx_auth.write_bytes(b"fixture-original-lx-auth\n")
+        self.config["services"]["sqmusic-server"] = {"volumes": [
+            {"type": "bind", "source": str(staging), "target": "/music"},
+            {"type": "bind", "source": str(auth), "target": "/run/secrets/sq-auth.json", "read_only": True}]}
+        self.config["services"]["bot"]["volumes"].append(
+            {"type": "bind", "source": str(lx_auth), "target": "/run/secrets/lx-auth", "read_only": True})
+        self.rows.append({**self.rows[0], "id": "fixture-sq-server", "service": "sqmusic-server"})
+        managed = {"SQ_STAGING_PATH": str(staging), "SQ_MYSQL_DATA_PATH": str(self.mysql),
+                   "SQ_AUTH_PATH": str(auth), "LX_FRONTEND_AUTH_PATH": str(lx_auth), "MUSIC_PATH": str(self.media)}
+        self.descriptor["managed_paths"] = managed
+        self.write_descriptor()
+        credentials = {"SQ_DB_PASSWORD": "fixture-original-db$literal", "SQ_DB_ROOT_PASSWORD": "fixture-original-root",
+                       "SQ_JWT_SECRET": "fixture-original-jwt"}
+        installer.write_env(self.install / "config/private.env", {**managed, **credentials})
+        original_db = (self.mysql / "database.dat").read_bytes()
+        original_auth = auth.read_bytes()
+        self.snapshot(include_media=True)
+        target = self.root / "new-host"
+        restored = migration.restore_bundle(self.bundle, target)
+        (target / "source").mkdir()
+        (target / "source/.env.example").write_text("")
+        subject = installer.Installer(target)
+        subject.state["restore"] = restored
+        subject.state["restored_needs_cutover"] = True
+        subject.compose = mock.Mock()
+        subject.stage_configuration()
+        values = installer.read_env(subject.env_file)
+        restored_auth = Path(values["SQ_AUTH_PATH"])
+        restored_db = Path(values["SQ_MYSQL_DATA_PATH"])
+        restored_staging = Path(values["SQ_STAGING_PATH"])
+        spec = importlib.util.spec_from_file_location("migration_sq_contract", Path(__file__).parents[1] / "services/sq-music/bootstrap.py")
+        bootstrap = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bootstrap)
+        before_env = subject.env_file.read_bytes()
+        with mock.patch.object(bootstrap.secrets, "token_hex", side_effect=AssertionError("must not regenerate restored secrets")), \
+                mock.patch.object(bootstrap.secrets, "token_urlsafe", side_effect=AssertionError("must not regenerate restored auth")), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            bootstrap.prepare(subject.env_file)
+        self.assertEqual(restored_auth.name, auth.name)
+        self.assertNotIn(restored_auth.parent, restored_db.parents)
+        self.assertNotIn(restored_auth.parent, restored_staging.parents)
+        self.assertEqual(Path(values["LX_FRONTEND_AUTH_PATH"]).name, lx_auth.name)
+        self.assertEqual(Path(values["LX_FRONTEND_AUTH_PATH"]).read_bytes(), lx_auth.read_bytes())
+        self.assertEqual(subject.env_file.read_bytes(), before_env)
+        self.assertEqual(restored_auth.read_bytes(), original_auth)
+        self.assertEqual((restored_db / "database.dat").read_bytes(), original_db)
+        self.assertEqual({key: installer.read_env(subject.env_file)[key] for key in credentials}, credentials)
+        self.assertEqual(restored_auth.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(restored_auth.parent.stat().st_mode & 0o777, 0o700)
+
     def test_complete_snapshot_and_restore_preserve_private_bytes_and_task_state(self):
         manifest = self.snapshot()
         self.assertTrue(manifest["complete"])

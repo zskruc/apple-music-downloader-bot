@@ -799,6 +799,9 @@ def _restore_result(manifest: dict[str, Any], target_root: Path, config_dir: Pat
 def _restored_source_paths(manifest: dict[str, Any], target_root: Path) -> dict[str, str]:
     """Preserve declared parent/child layouts such as LX_DATA_PATH/data/config.js."""
     sources = manifest.get("sources", [])
+    file_paths = {source["path"] for source in sources if source.get("kind") == "file"}
+    file_paths.update(mount["source"] for mount in manifest.get("mounts", [])
+                      if mount.get("source_kind") == "file")
     anchors = []
     for project in manifest.get("projects", []):
         managed = project.get("managed_paths", {})
@@ -809,7 +812,14 @@ def _restored_source_paths(manifest: dict[str, Any], target_root: Path) -> dict[
                     or not isinstance(value, str) or not Path(value).is_absolute()
                     or ".." in Path(value).parts or Path(value) == Path(Path(value).anchor)):
                 raise MigrationError("Unsafe managed-path mapping.")
-            anchors.append((Path(value), target_root / "managed" / project["id"] / key.lower()))
+            destination = target_root / "managed" / project["id"] / key.lower()
+            if value in file_paths:
+                # A standalone credential file needs its own private parent.
+                # Flattening it beside database/staging directories makes its
+                # parent contain those trees, violating their separation and
+                # applying secret-directory permissions to unrelated state.
+                destination = destination / Path(value).name
+            anchors.append((Path(value), destination))
     result = {}
     for source in sources:
         path = Path(source["path"])

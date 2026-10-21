@@ -56,6 +56,18 @@ FATAL_READINESS_ERRORS = frozenset({
     "guest_ssh_port_not_owned_by_test_vm",
 })
 
+# Closed literal SystemExit messages from services/sq-music/bootstrap.py.
+# Never return the raw line: even a near match may contain private user data.
+SQ_PREPARE_ERROR_CATEGORIES = {
+    "SQ bootstrap requires single-line .env values": "sq_env_requires_single_line",
+    "SQ auth file must not be a symlink": "sq_auth_symlink_disallowed",
+    "SQ auth file is missing or invalid; no contents printed": "sq_auth_missing_or_invalid",
+    "SQ auth must contain nonempty username/password strings": "sq_auth_credentials_invalid",
+    "SQ staging, database and secret directories must be separate and non-overlapping": "sq_state_directories_overlap",
+    "SQ private state and staging must be separate from the public MUSIC_PATH": "sq_private_state_overlaps_music",
+    "Existing SQ database found; restore its matching secrets instead of generating new ones": "sq_existing_database_requires_matching_secrets",
+}
+
 
 def credential_values(values):
     """Select credentials, never auth retry counts, flags, paths or image tags."""
@@ -580,11 +592,16 @@ class Harness:
                 # Only the failed installer stage and installer summaries,
                 # never successful build logs, container
                 # application logs, Cookie files, Config.Env, SQL or API bodies.
-                if re.search(r"(?i)cookie|authorization|bearer|password|secret|token|private.key", line):
-                    continue
-                if not re.search(r"(?i)installation stage|installation incomplete|error|failed|fatal|could not|not found|no matching distribution|did not complete|exception|traceback|^\s*E:", line):
-                    continue
-                safe.append("[" + label + "] " + redact_diagnostic(line, private_values, self.root, self.source))
+                category = SQ_PREPARE_ERROR_CATEGORIES.get(line.strip()) if path.name == "sq-private-prepare.log" else None
+                if category:
+                    rendered = category
+                else:
+                    if re.search(r"(?i)cookie|authorization|bearer|password|secret|token|private.key", line):
+                        continue
+                    if not re.search(r"(?i)installation stage|installation incomplete|error|failed|fatal|could not|not found|no matching distribution|did not complete|exception|traceback|^\s*E:", line):
+                        continue
+                    rendered = redact_diagnostic(line, private_values, self.root, self.source)
+                safe.append("[" + label + "] " + rendered)
                 if len(safe) >= 60:
                     break
             if len(safe) >= 60:
