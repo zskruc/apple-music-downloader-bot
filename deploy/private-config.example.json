@@ -1,0 +1,12 @@
+{
+  "env": {
+    "START_BOT": false,
+    "TELEGRAM_BOT_TOKEN": "",
+    "TELEGRAM_ALLOWED_CHAT_IDS": "",
+    "TELEGRAM_PROXY_URL": "",
+    "AMDL_DOWNLOAD_PROXY_URL": "",
+    "YT_DOWNLOAD_PROXY_URL": "",
+    "YT_LARGE_DOWNLOAD_PROXY_URL": "",
+    "BILI_DOWNLOAD_PROXY_URL": ""
+  }
+}

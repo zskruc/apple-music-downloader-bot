@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
-ARG PYTHON_IMAGE=python:3.12-slim-bookworm
-ARG DENO_VERSION=2.9.6
-FROM denoland/deno:bin-${DENO_VERSION} AS deno
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+ARG DENO_IMAGE=denoland/deno:bin-2.9.6@sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba
+FROM ${DENO_IMAGE} AS deno
 
-FROM debian:bookworm-slim AS whisper-builder
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS whisper-builder
 ARG WHISPER_CPP_REVISION=4979e04f5dcaccb36057e059bbaed8a2f5288315
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git cmake build-essential && rm -rf /var/lib/apt/lists/*

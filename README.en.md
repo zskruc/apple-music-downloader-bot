@@ -4,7 +4,7 @@
 
 A self-hosted Telegram / Synology Chat media ingestion service for a NAS. It accepts links and search requests, processes jobs through GAMDL, yt-dlp and a local wrapper service, and writes media, artwork and lyrics to configured folders.
 
-This repository packages a customized NAS deployment into source code, portable deployment templates and an operations guide. **The initial snapshot used maintenance material dated through 2026-10-19. A subsequent read-only IPv6 check on 2026-10-21 compared live source, mounts, dependencies and existing media. The portable templates retain [documented differences](docs/LIVE_CHECK_20261021.md) from the customized deployment. A clean build, new authenticated downloads and recovery acceptance tests remain pending.** Treat this as a source snapshot requiring integration validation.
+This repository packages a customized NAS deployment into source code, portable templates and operations tools. **v0.2.0 adds one-command installation, complete private backups and migration restore. Real Docker / KVM deployment acceptance has not been run; authenticated downloads and playback still need operator validation.** Initial maintenance material was dated through 2026-10-19. A read-only IPv6 check on 2026-10-21 compared live source, mounts, dependencies and existing media; that [live check](docs/LIVE_CHECK_20261021.md) does not establish fresh-install acceptance.
 
 ## Features
 
@@ -16,27 +16,25 @@ This repository packages a customized NAS deployment into source code, portable 
 - Optional SABR compatibility with a pinned upstream tool and preserved notices; separate build-install and runtime opt-ins.
 - LRC / TTML lyrics, word-timed lyric matching, persistent queues, retries and notifications.
 - A wrapper protocol adapter, KVM VM provisioning support, on-demand authentication browsers and service-scoped recovery.
-- Documented backups, upgrades, rollbacks and troubleshooting.
+- One-command preparation of the full suite, resumable installation, private backups including media and images by default, explicit restore cutover, and single-service upgrades and rollback.
 
-Some features require separate services, model files or account authorization. See the configuration and [operations guide](docs/OPERATIONS.en.md). No media, Apple accounts, cookies, device credentials, wrapper sessions, VM disks or model weights are included.
+Some features require network access and account authorization. The [one-command installer](docs/ONE_COMMAND.en.md) obtains pinned dependencies and model weights and builds services on the deploying machine. No media, Apple accounts, cookies, device credentials, wrapper sessions, VM disks or model weights are included in the repository.
 
 ## Architecture
 
 Telegram / Synology Chat → bot → GAMDL → wrapper adapter → user-authorized wrapper / KVM VM. Optional LX and SQ backends supply supplementary lossless recordings. The bot also dispatches yt-dlp tasks and persistent lyric jobs. Finished files are written to media folders that your media servers can scan. See the diagram in the [Chinese README](README.md#架构).
 
-## Before deployment
+## One-command deployment
 
-Use a Linux x86-64 NAS with Docker Compose and sufficient storage. The bundled VM approach requires `/dev/kvm`. Read the [operations guide](docs/OPERATIONS.en.md), review `compose.yaml` and `.env.example`, then supply your own storage paths, credentials and network configuration.
+Use Linux amd64 with readable/writable `/dev/kvm`, Docker Engine, Compose 2.20+, Python 3.8+, Git and curl. Defaults require 50 GiB free disk and 6 GiB available RAM. Select a dedicated local directory and an account allowed to operate Docker and KVM. Once the v0.2.0 tag and source release are published:
 
 ```sh
-cp .env.example .env
-chmod 600 .env
-# Set the bot token, allowed chat IDs, storage paths and other settings.
-docker compose config --quiet
-docker compose build
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /srv/apple-music-downloader --with-media-servers'
 ```
 
-Do not paste the full output of `docker compose config` into a public issue: expanded configuration can contain credentials. Apple Music requires your own valid subscription, initialized wrapper and account login. Running containers alone do not establish that downloads work. Follow the operations guide for the first start.
+This prepares the bot, wrapper / KVM VM, LX, SQ / MySQL / NetEase API, YouTube PO provider, two lyric workers, on-demand login browsers and recovery configuration. `--with-media-servers` adds Navidrome, Emby and LrcAPI with loopback-only management ports. Accounts, 2FA, authorized music sources and the Emby wizard remain manual. The bot stays stopped without a safe chat entry point and a healthy wrapper; status lists outstanding configuration. This example installs with sudo; use the same privileges for later maintenance.
+
+The [complete guide](docs/ONE_COMMAND.en.md) covers private JSON configuration, directory layout, resume, persistent cookies, offline backups including media and images, source archives and restore cutover. The [operations guide](docs/OPERATIONS.en.md) retains manual Compose setup. The full suite enables lyrics, SABR and automatic authentication configuration, unlike the manual template's opt-in defaults. Its Docker socket configuration requires a trusted deployment host.
 
 **Only one poller may use a Telegram bot token.** Back up and plan a cutover when replacing an existing service. Use a separate test bot for isolated acceptance testing.
 
@@ -58,6 +56,8 @@ These steps install test dependencies; service dependencies are in `requirements
 ## Documentation and licensing
 
 - [Operations guide](docs/OPERATIONS.en.md) · [中文运维手册](docs/OPERATIONS.zh-CN.md)
+- [One-command installation, backup and restore](docs/ONE_COMMAND.en.md) · [中文指南](docs/ONE_COMMAND.zh-CN.md)
+- [Pinned dependencies and licensing](deploy/SOURCES.md) · [Private configuration example](deploy/private-config.example.json)
 - [LX / SQ and unified music](docs/MUSIC_SOURCES.en.md) · [中文配置指南](docs/MUSIC_SOURCES.zh-CN.md)
 - [LX backend deployment](services/lx-music/README.md) · [SQ backend and task patch](services/sq-music/README.md)
 - [YouTube Music, video, subtitles and cookies](docs/YOUTUBE.en.md) · [中文指南](docs/YOUTUBE.zh-CN.md)

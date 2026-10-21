@@ -1,5 +1,5 @@
 # wrapper-manager remains a separate AGPL-3.0 upstream component.
-FROM golang:1.23-bookworm AS manager-builder
+FROM golang:1.26.10-bookworm@sha256:5b1f78db1f54cc8cb46e652c51d3f854441c4310a449161b6fe9fb553edab505 AS manager-builder
 ARG WRAPPER_MANAGER_REVISION=d40d2046fead280f568c61a661cfdc10bd71c7dc
 WORKDIR /src
 RUN git init && git remote add origin https://github.com/WorldObservationLog/wrapper-manager.git \
@@ -10,7 +10,7 @@ RUN git init && git remote add origin https://github.com/WorldObservationLog/wra
     && cp LICENSE /out/LICENSE \
     && printf '%s\n' "https://github.com/WorldObservationLog/wrapper-manager/tree/${WRAPPER_MANAGER_REVISION}" > /out/SOURCE
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl genisoimage netcat-openbsd openssh-client \
     qemu-system-x86 qemu-utils procps \

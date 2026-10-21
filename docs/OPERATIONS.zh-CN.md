@@ -1,5 +1,7 @@
 # 部署与运维
 
+**本页是手动 Compose 模板流程。** v0.2.0 一命令 managed 安装以[一命令指南](ONE_COMMAND.zh-CN.md)为准：其 ops 自动读取部署描述和 `config/private.env`，镜像升级覆盖写到安装根 `config/images.compose.json`；完整备份使用 `install.py backup`，默认包含媒体与镜像，与本页旧升级快照范围不同。不要在 managed 的 `source/` 内另建 `.env` 启动第二套服务。
+
 本手册适用于本仓库的可移植模板。生产环境应保存自己的配置、镜像摘要和验收记录。初始公开版本尚未完成干净主机部署与真实账号验收，不要直接覆盖现有生产目录。
 
 ## 1. 准备环境

@@ -1,0 +1,47 @@
+name: Fresh NAS deployment acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      include_images:
+        description: Also export and reload the complete private image archive
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: deployment-acceptance
+  cancel-in-progress: false
+jobs:
+  fresh-install-and-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reserve disk space on this disposable hosted runner
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h "$RUNNER_TEMP"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require a real KVM-capable Linux runner
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          docker version --format '{{.Server.Version}}'
+          docker compose version --short
+      - name: Install, verify, snapshot and restore the actual suite
+        env:
+          INCLUDE_IMAGES: ${{ inputs.include_images }}
+        run: |
+          options=()
+          if [ "$INCLUDE_IMAGES" = true ]; then options+=(--include-images); fi
+          python -m deploy.acceptance --root "$RUNNER_TEMP/amdl-acceptance" --report "$RUNNER_TEMP/amdl-public/report.json" "${options[@]}"
+      - name: Publish only the sanitized acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-acceptance-report
+          path: ${{ runner.temp }}/amdl-public/report.json
+          if-no-files-found: warn
+          retention-days: 14

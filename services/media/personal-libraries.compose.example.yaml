@@ -1,0 +1,17 @@
+# Explicit, separate opt-in only. Create no directory and never write to it.
+# Merge only if these media services are selected and this existing path is yours.
+services:
+  navidrome:
+    volumes:
+      - type: bind
+        source: ${PERSONAL_MUSIC_PATH:?Set an existing personal music folder explicitly}
+        target: /music/personal
+        read_only: true
+        bind: {create_host_path: false}
+  emby:
+    volumes:
+      - type: bind
+        source: ${PERSONAL_MUSIC_PATH:?Set an existing personal music folder explicitly}
+        target: /music/personal
+        read_only: true
+        bind: {create_host_path: false}

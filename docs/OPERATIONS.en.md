@@ -1,5 +1,7 @@
 # Deployment and operations
 
+**This page describes manual Compose templates.** For v0.2.0 managed installations use the [one-command guide](ONE_COMMAND.en.md). Installed ops automatically loads the descriptor and `config/private.env`, with image upgrades recorded at root `config/images.compose.json`. Complete `install.py backup` includes media and images by default, unlike the older upgrade snapshot described below. Do not start another stack by creating a `.env` in managed `source/`.
+
 This guide describes the portable templates in this repository. Keep deployment-specific configuration, image digests and acceptance records privately. The initial public snapshot has not passed clean-host installation or real-account acceptance testing. Use a separate directory rather than overwriting production.
 
 ## 1. Prerequisites

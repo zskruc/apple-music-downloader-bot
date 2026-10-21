@@ -1,0 +1,8 @@
+{
+  "setup": "Create libraries in the private Emby first-run UI; this file is a reference, not an imported database.",
+  "libraries": [
+    {"name": "Bot Music", "type": "music", "paths": ["/music/apple", "/music/youtube", "/music/bilibili"]},
+    {"name": "YouTube", "type": "homevideos", "paths": ["/video/YouTube"]},
+    {"name": "Bilibili", "type": "homevideos", "paths": ["/video/Bilibili"]}
+  ]
+}

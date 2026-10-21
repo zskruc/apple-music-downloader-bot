@@ -1,5 +1,9 @@
 # 运维脚本 / Operations
 
+**入口说明：** 下文描述手动 Compose 模板流程。v0.2.0 一命令 managed 安装请先按[完整指南](../docs/ONE_COMMAND.zh-CN.md)操作；安装内的 ops 自动读取 `deployment.json`、`config/private.env` 和已登记叠加文件，升级镜像覆盖写到安装根 `config/images.compose.json`。完整备份使用 `python3 source/install.py backup --root ROOT --destination NEW_DIRECTORY`，默认包含媒体和镜像；下文旧 `ops backup` 是另一个默认不含媒体的升级快照。
+
+**Entry points:** The instructions below describe manual Compose templates. For v0.2.0 managed installations, follow the [one-command guide](../docs/ONE_COMMAND.en.md). Installed ops loads the descriptor/private environment automatically and records image overrides at root `config/images.compose.json`. Use the installer `backup` entry point for complete backups including media and images by default; the older ops backup below has a different scope.
+
 所有命令在本项目目录使用 `bash ops/stack.sh`。脚本通过 Compose 项目标签和固定服务白名单限制操作；不会扫描或重启其他 NAS 项目，不安装 timer/cron，也不启用任何现有主机守护。
 
 可选 `--profile lx` 与 `--profile sq` 会自动合并 `services/` 下的对应配置。LX/SQ 与主项目共用网络并纳入服务白名单；SQ 应用会在 MySQL 之前停止、在 MySQL 之后恢复。使用与部署相同的 profile 备份，私有快照会包含 LX 数据、SQ 数据库、鉴权文件和叠加配置；不包含公开音乐、SQ 暂存、日志和缓存。先暂停所有入口并确认后端手动队列为空，不能只检查 Bot 队列。完整初始化和验收见 [专项指南](../docs/MUSIC_SOURCES.zh-CN.md)。

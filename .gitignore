@@ -10,6 +10,8 @@ __pycache__/
 state/
 data/
 media/
+!services/media/
+!services/media/**
 models/
 wrapper-data/
 legacy-vm-data/
@@ -19,6 +21,9 @@ logs/
 runtime/
 .ops/
 secrets/
+private/
+private-config*.json
+!private-config.example.json
 *.log
 *.sqlite*
 *.db

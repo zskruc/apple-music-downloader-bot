@@ -17,6 +17,12 @@ jobs:
       - run: python -m pip install -r requirements-test.txt
       - run: python scripts/check_repo.py
       - run: python scripts/run_tests.py
+      - name: Verify release archive and bootstrap
+        run: |
+          python install.py --help
+          python scripts/build_release.py --output "$RUNNER_TEMP/amdl-release"
+          digest=$(cut -d ' ' -f 1 "$RUNNER_TEMP/amdl-release/source.tar.gz.sha256")
+          python install.py --root "$RUNNER_TEMP/amdl-bootstrap" --archive "$RUNNER_TEMP/amdl-release/source.tar.gz" --sha256 "$digest" --with-media-servers --dry-run
       - name: Verify image source inclusion without downloads
         run: |
           docker build --network=none -f - . <<'DOCKERFILE'
@@ -32,6 +38,9 @@ jobs:
           SQ_DB_PASSWORD: ci-config-only
           SQ_DB_ROOT_PASSWORD: ci-config-only-root
           SQ_JWT_SECRET: ci-config-only-jwt
+          NAVIDROME_DATA_PATH: /srv/amdl/navidrome
+          EMBY_DATA_PATH: /srv/amdl/emby
+          LRCAPI_DATA_PATH: /srv/amdl/lrcapi
         run: |
           cp .env.example .env
           docker compose config --quiet
@@ -40,4 +49,5 @@ jobs:
           docker compose -f compose.yaml -f services/lx-music/compose.yaml --profile lx config --quiet
           docker compose -f compose.yaml -f services/sq-music/compose.yaml --profile sq config --quiet
           docker compose -f compose.yaml -f services/lx-music/compose.yaml -f services/sq-music/compose.yaml -f compose.self-heal.yaml -f compose.auth-refresh.yaml --profile lx --profile sq --profile self-heal --profile auth config --quiet
+          docker compose -f compose.yaml -f services/lx-music/compose.yaml -f services/sq-music/compose.yaml -f services/media/compose.yaml --profile lx --profile sq --profile navidrome --profile emby --profile lrcapi config --quiet
           for script in ops/stack.sh vm/*.sh services/youtube/*.sh; do bash -n "$script"; done

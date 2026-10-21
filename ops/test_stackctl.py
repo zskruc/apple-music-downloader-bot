@@ -24,15 +24,54 @@ class MaintenanceContracts(unittest.TestCase):
         return stack
 
     def test_profiles_expand_default_service_set(self):
-        stack = self.stack(profiles=['lyrics', 'auth', 'lx', 'sq'], heal=True)
+        stack = self.stack(profiles=list(module.PROFILE_SERVICES), heal=True)
         self.assertEqual(set(stack.selected([])), module.SERVICES)
 
     def test_optional_profiles_add_their_configuration_once(self):
         args = argparse.Namespace(profile=['sq', 'lx', 'sq'], self_heal=False)
         command = module.compose_base(args)
-        for filename in module.PROFILE_FILES.values():
+        for filename in {module.PROFILE_FILES[profile] for profile in args.profile}:
             self.assertEqual(command.count(str(module.ROOT / filename)), 1)
         self.assertNotIn(str(module.ROOT / 'compose.self-heal.yaml'), command)
+
+    def test_managed_context_uses_private_env_and_saved_overlays(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            source = root / 'source'
+            source.mkdir()
+            config = root / 'config'
+            config.mkdir()
+            (source / 'compose.yaml').write_text('services: {}\n')
+            (config / 'private.env').write_text('STATE_PATH=/synthetic/state\n')
+            (config / 'images.compose.json').write_text('{"services": {}}')
+            module.write_json(root / 'deployment.json', {
+                'schema': 1, 'source_dir': 'source', 'env_file': 'config/private.env',
+                'project_name': 'isolated-stack', 'compose_files': ['compose.yaml'],
+                'extra_compose_files': ['config/images.compose.json'], 'profiles': ['auth'],
+            })
+            args = argparse.Namespace(profile=[], self_heal=False, deployment=root)
+            command = module.compose_base(args)
+            self.assertIn(str(config / 'private.env'), command)
+            self.assertNotIn(str(source / '.env'), command)
+            self.assertEqual(command.count(str(config / 'images.compose.json')), 1)
+
+    def test_managed_default_start_leaves_login_browsers_stopped(self):
+        stack = self.stack(profiles=['auth', 'lx'])
+        stack.managed_root = Path('/synthetic/deployment')
+        self.assertNotIn('youtube-auth-browser', stack.selected([]))
+        self.assertNotIn('bilibili-auth-browser', stack.selected([]))
+        self.assertIn('lxserver', stack.selected([]))
+
+    def test_managed_image_override_is_included_in_future_snapshots(self):
+        stack = self.stack()
+        with tempfile.TemporaryDirectory() as folder:
+            stack.managed_root = Path(folder)
+            stack.active = stack.managed_root / 'config/images.compose.json'
+            module.write_json(stack.managed_root / 'deployment.json', {'extra_compose_files': []})
+            stack.persist_override({'services': {'bot': {'image': 'reviewed:new'}}})
+            descriptor = json.loads((stack.managed_root / 'deployment.json').read_text())
+            self.assertEqual(descriptor['extra_compose_files'], ['config/images.compose.json'])
+            self.assertEqual(json.loads(stack.active.read_text())['services']['bot']['image'], 'reviewed:new')
 
     def test_auth_refresh_opt_in_does_not_select_watchdog_services(self):
         stack = self.stack()

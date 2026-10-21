@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bot"))
 REAL_CONNECT = socket.socket.connect
 REAL_CONNECT_EX = socket.socket.connect_ex
@@ -64,6 +65,9 @@ def main() -> int:
                     suites.addTests(loader.discover(str(group), pattern="test_*.py"))
                     loader = unittest.TestLoader()
             suites.addTests(loader.discover(str(ROOT / "ops"), pattern="test_*.py"))
+            if (ROOT / "deploy").is_dir():
+                loader = unittest.TestLoader()
+                suites.addTests(loader.discover(str(ROOT / "deploy"), pattern="test_*.py"))
             for name in ("lx-music", "sq-music", "youtube"):
                 loader = unittest.TestLoader()
                 suites.addTests(loader.discover(str(ROOT / "services" / name), pattern="test_*.py"))

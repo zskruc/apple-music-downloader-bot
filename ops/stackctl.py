@@ -22,20 +22,25 @@ SERVICES = frozenset({
     'youtube-auth-browser', 'bilibili-auth-browser',
     'wrapper-watchdog', 'bot-watchdog',
     'lxserver', 'sqmusic-server', 'sq-mysql', 'sq-neteasecloudmusicapi',
+    'navidrome', 'emby', 'lrcapi',
 })
 PROFILE_FILES = {
     'lx': 'services/lx-music/compose.yaml',
     'sq': 'services/sq-music/compose.yaml',
+    'navidrome': 'services/media/compose.yaml',
+    'emby': 'services/media/compose.yaml',
+    'lrcapi': 'services/media/compose.yaml',
 }
 PROFILE_SERVICES = {
     'auth': ['youtube-auth-browser', 'bilibili-auth-browser'],
     'lyrics': ['word-lyrics-resolver', 'word-lyrics-nas-aligner'],
     'lx': ['lxserver'],
     'sq': ['sq-mysql', 'sq-neteasecloudmusicapi', 'sqmusic-server'],
+    'navidrome': ['navidrome'], 'emby': ['emby'], 'lrcapi': ['lrcapi'],
 }
 PRIVATE_TARGETS = {'/state', '/session', '/data', '/config', '/server/data', '/var/lib/mysql',
                    '/youtube-auth-browser', '/bilibili-auth-browser',
-                   '/run/secrets/lx-frontend-auth', '/run/secrets/sq-auth.json'}
+                   '/run/secrets/lx-frontend-auth', '/run/secrets/sq-auth.json', '/app/config'}
 WRITERS = {'bot', 'wrapper', 'legacy-wrapper', 'word-lyrics-resolver',
            'word-lyrics-nas-aligner', 'youtube-auth-browser', 'bilibili-auth-browser'}
 STOP_ORDER = {'wrapper-watchdog': 0, 'bot-watchdog': 0, 'bot': 1,
@@ -43,13 +48,51 @@ STOP_ORDER = {'wrapper-watchdog': 0, 'bot-watchdog': 0, 'bot': 1,
               'youtube-auth-browser': 3, 'bilibili-auth-browser': 3,
               'wrapper': 4, 'youtube-pot': 5, 'legacy-wrapper': 6,
               'lxserver': 4, 'sqmusic-server': 4, 'sq-neteasecloudmusicapi': 5, 'sq-mysql': 6}
+STOP_ORDER.update(navidrome=4, emby=4, lrcapi=4)
 
 
 def stop_order(services: list[str]) -> list[str]:
     return sorted(services, key=lambda service: (STOP_ORDER[service], service))
 
 
+def managed_context(args: argparse.Namespace):
+    selected = getattr(args, 'deployment', None)
+    if selected is None and (ROOT.parent / 'deployment.json').is_file():
+        selected = ROOT.parent
+    if selected is None:
+        return None
+    sys.path.insert(0, str(ROOT))
+    from deploy.migration import _projects
+    root = Path(selected).expanduser().resolve()
+    descriptor, projects = _projects(root)
+    if len(projects) != 1:
+        raise RuntimeError('Use the deployment backup entry point for multiple projects')
+    return root, descriptor, projects[0]
+
+
 def compose_base(args: argparse.Namespace) -> list[str]:
+    managed = managed_context(args)
+    if managed:
+        _, _, project = managed
+        command = ['docker', 'compose', '--project-directory', str(project['source_path']),
+                   '--env-file', str(project['environment_path']), '--project-name', project['project_name']]
+        for path in project['compose_paths']:
+            command += ['-f', str(path)]
+        profiles = list(dict.fromkeys(project['profiles'] + list(args.profile)))
+        args.profile = [profile for profile in profiles if profile != 'self-heal']
+        args.self_heal = args.self_heal or 'self-heal' in profiles
+        for enabled, filename in [(args.self_heal, 'compose.self-heal.yaml'),
+                                   (getattr(args, 'auth_refresh', False), 'compose.auth-refresh.yaml')]:
+            path = str(project['source_path'] / filename)
+            if enabled and path not in command:
+                command += ['-f', path]
+        for profile in profiles:
+            if profile in PROFILE_FILES:
+                path = str(project['source_path'] / PROFILE_FILES[profile])
+                if path not in command:
+                    command += ['-f', path]
+            command += ['--profile', profile]
+        return command
     command = ['docker', 'compose', '--project-directory', str(ROOT),
                '--env-file', str(ROOT / '.env'), '-f', str(ROOT / 'compose.yaml')]
     if args.self_heal:
@@ -57,15 +100,18 @@ def compose_base(args: argparse.Namespace) -> list[str]:
     if getattr(args, 'auth_refresh', False):
         command += ['-f', str(ROOT / 'compose.auth-refresh.yaml')]
     for profile in dict.fromkeys(args.profile):
-        if profile in PROFILE_FILES:
+        if profile in PROFILE_FILES and str(ROOT / PROFILE_FILES[profile]) not in command:
             command += ['-f', str(ROOT / PROFILE_FILES[profile])]
         command += ['--profile', profile]
     return command
 
 
 def run(args: list[str], *, capture: bool = False) -> str:
+    sys.path.insert(0, str(ROOT))
+    from deploy.environment import command_environment
     result = subprocess.run(args, cwd=ROOT, text=True, check=True,
-                            stdout=subprocess.PIPE if capture else None)
+                            stdout=subprocess.PIPE if capture else None,
+                            env=command_environment(args))
     return result.stdout if capture else ''
 
 
@@ -80,6 +126,8 @@ def write_json(path: Path, payload: object) -> None:
 class Stack:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
+        managed = managed_context(args)
+        self.managed_root = managed[0] if managed else None
         self.base = compose_base(args)
         # config is deliberately captured: it contains expanded secret values.
         self.config = json.loads(run(self.base + ['config', '--format', 'json'], capture=True))
@@ -89,8 +137,10 @@ class Stack:
         bot_mounts = self.config['services']['bot']['volumes']
         state = next(v['source'] for v in bot_mounts if v['target'] == '/state')
         self.state = Path(state)
-        self.active = self.state / 'ops' / 'images.compose.json'
-        self.command = self.base + (['-f', str(self.active)] if self.active.exists() else [])
+        self.active = (self.managed_root / 'config/images.compose.json' if self.managed_root
+                       else self.state / 'ops' / 'images.compose.json')
+        self.command = self.base + (['-f', str(self.active)]
+                                   if self.active.exists() and str(self.active) not in self.base else [])
 
     def validate_access(self) -> None:
         settings = self.config['services']['bot']['environment']
@@ -129,6 +179,8 @@ class Stack:
         if not names and default:
             names = ['legacy-wrapper', 'wrapper', 'youtube-pot', 'bot']
             for profile in dict.fromkeys(self.args.profile):
+                if getattr(self, 'managed_root', None) and profile == 'auth':
+                    continue
                 names += PROFILE_SERVICES[profile]
             if self.args.self_heal:
                 names += ['wrapper-watchdog', 'bot-watchdog']
@@ -200,6 +252,16 @@ class Stack:
             raise RuntimeError('Could not restart services: ' + ', '.join(failed))
 
     def backup(self, destination: Path, *, restart: bool = True) -> dict:
+        if getattr(self, 'managed_root', None):
+            from deploy.manage import backup
+            destination = destination.expanduser().resolve()
+            running = [name for name, row in self.inventory().items() if row['running']]
+            bundle = destination
+            if not restart:
+                destination.mkdir(parents=True, exist_ok=False, mode=0o700)
+                bundle = destination / 'bundle'
+            result = backup(self.managed_root, bundle, restart=restart)
+            return dict(result, running_services=running)
         destination = destination.expanduser().resolve()
         if destination == ROOT or ROOT in destination.parents:
             raise RuntimeError('Backups must be outside the Git checkout')
@@ -266,6 +328,16 @@ class Stack:
     def override(self) -> dict:
         return json.loads(self.active.read_text()) if self.active.exists() else {'services': {}}
 
+    def persist_override(self, changes: dict) -> None:
+        write_json(self.active, changes)
+        if getattr(self, 'managed_root', None):
+            descriptor_file = self.managed_root / 'deployment.json'
+            descriptor = json.loads(descriptor_file.read_text())
+            extras = descriptor.setdefault('extra_compose_files', [])
+            if 'config/images.compose.json' not in extras:
+                extras.append('config/images.compose.json')
+            write_json(descriptor_file, descriptor)
+
     def upgrade(self, service: str, image: str, destination: Path) -> None:
         destination = destination.expanduser().resolve()
         self.selected([service])
@@ -289,14 +361,14 @@ class Stack:
             # Recovery metadata is durable before the active override changes.
             write_json(destination / 'upgrade.json', upgrade)
             changes['services'][service] = {'image': candidate['Id']}
-            write_json(self.active, changes)
+            self.persist_override(changes)
             self.command = self.base + ['-f', str(self.active)]
             try:
                 # All writers remain stopped until the new container exists.
                 self.compose('up', '--no-start', '--no-deps', '--no-build', '--pull', 'never', service)
             except Exception:
                 changes['services'][service] = {'image': rollback_tag}
-                write_json(self.active, changes)
+                self.persist_override(changes)
                 self.compose('up', '--no-start', '--no-deps', '--no-build', '--pull', 'never', service)
                 raise
         finally:
@@ -311,7 +383,7 @@ class Stack:
         run(['docker', 'image', 'inspect', data['rollback_image']], capture=True)
         changes = self.override()
         changes['services'][service] = {'image': data['rollback_image']}
-        write_json(self.active, changes)
+        self.persist_override(changes)
         self.command = self.base + ['-f', str(self.active)]
         mode = '-d' if data['previously_running'] else '--no-start'
         self.compose('up', mode, '--no-deps', '--no-build', '--pull', 'never', service)
@@ -320,6 +392,7 @@ class Stack:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--deployment', type=Path, help='managed root; auto-detected from source/')
     parser.add_argument('--self-heal', action='store_true', help='include the explicit Docker socket override')
     parser.add_argument('--auth-refresh', action='store_true', help='allow on-demand browser refresh through Docker API')
     parser.add_argument('--profile', action='append', choices=sorted(PROFILE_SERVICES), default=[])

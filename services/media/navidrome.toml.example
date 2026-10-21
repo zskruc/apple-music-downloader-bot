@@ -1,0 +1,9 @@
+# Equivalent to the overlay environment; copy to private /data/navidrome.toml
+# only when intentionally managing configuration via a file.
+DataFolder = "/data"
+MusicFolder = "/music"
+Port = 4533
+ScanSchedule = "1h"
+LogLevel = "info"
+# /music/apple, /music/youtube and /music/bilibili are the bot's read-only outputs.
+# Existing personal libraries stay external unless explicitly mounted separately.

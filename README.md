@@ -4,7 +4,7 @@
 
 用于自托管 NAS 的 Telegram / Synology Chat 媒体入库服务：接收链接或搜索请求，通过 GAMDL、yt-dlp 与本地 wrapper 服务处理任务，并将媒体、封面和歌词写入指定目录。
 
-这是从长期使用的 NAS 定制部署中整理的源码项目，包含服务代码、可移植部署模板与运维流程。**初始公开版本来自截至 2026-10-19 的维护资料；2026-10-21 已通过 IPv6 只读核对线上源码、挂载、依赖与已有媒体。开源模板与线上定制部署仍有[已记录差异](docs/LIVE_CHECK_20261021.md)，新的容器构建、账号下载与恢复验收尚未完成。** 不应将它视为已验证的一键安装包。
+这是从长期使用的 NAS 定制部署中整理的源码项目，包含服务代码、可移植部署模板与运维流程。**v0.2.0 新增一命令部署、完整私有备份与迁移恢复入口；真实 Docker / KVM 部署验收尚未运行，账号下载与播放仍需部署者验收。** 初始资料截至 2026-10-19，2026-10-21 已通过 IPv6 只读核对线上源码、挂载、依赖与已有媒体；[线上核对记录](docs/LIVE_CHECK_20261021.md)不能替代新安装验收。
 
 ## 功能
 
@@ -16,9 +16,9 @@
 - 可选 SABR 兼容路径，固定上游工具校验值并保留其许可；构建安装与运行启用分别选择。
 - LRC / TTML 歌词、逐字歌词来源匹配、持久队列、重试与通知。
 - wrapper 协议适配、KVM 虚拟机启动支持、按需登录浏览器及限定服务范围的健康恢复。
-- 备份、升级、回滚与故障排查流程。
+- 一命令准备完整套件、失败续装；默认包含媒体和镜像的私有备份、显式切换后的恢复，以及单服务升级、回滚。
 
-部分能力需要独立的外部服务、模型或账号授权；详见部署配置和[运维手册](docs/OPERATIONS.zh-CN.md)。本仓库不附带媒体、Apple 账号、Cookie、设备凭据、wrapper 会话、虚拟机磁盘或模型权重。
+部分能力需要网络和账号授权。[一命令部署](docs/ONE_COMMAND.zh-CN.md)会在部署者机器上获取固定依赖、模型并构建服务；仓库不附带媒体、Apple 账号、Cookie、设备凭据、wrapper 会话、虚拟机磁盘或模型权重。
 
 ## 架构
 
@@ -40,19 +40,17 @@ flowchart TD
     Q --> M
 ```
 
-## 部署前
+## 一命令部署
 
-准备 Linux x86-64 NAS、Docker Compose、足够的磁盘空间；使用内置 VM 方案需要 `/dev/kvm`。先阅读[运维手册](docs/OPERATIONS.zh-CN.md)，检查根目录 `compose.yaml` 和 `.env.example`，再根据自己的存储路径、账号和网络填写配置。
+准备 Linux amd64、可读写的 `/dev/kvm`、Docker Engine、Compose 2.20+、Python 3.8+、Git 和 curl；默认要求至少 50 GiB 可用磁盘、6 GiB 可用内存。使用专用本地目录，账号须能操作 Docker 和 KVM。v0.2.0 的 tag 和 source release 发布后：
 
 ```sh
-cp .env.example .env
-chmod 600 .env
-# 编辑 .env，设置 bot token、允许访问的 chat ID、存储位置等
-docker compose config --quiet
-docker compose build
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/zskruc/apple-music-downloader-bot/v0.2.0/install.py | sudo python3 - --root /srv/apple-music-downloader --with-media-servers'
 ```
 
-不要把 `docker compose config` 的完整输出贴到公开 issue，它可能包含展开后的凭据。Apple 服务需要由你自行完成有效订阅、wrapper 初始化和账号登录；没有这些状态时，容器启动并不代表下载功能可用。首次上线步骤以运维手册为准。
+这会准备 Bot、wrapper / KVM VM、LX、SQ / MySQL / 网易 API、YouTube PO provider、两个歌词 worker、按需认证浏览器与自愈配置；`--with-media-servers` 额外部署 Navidrome、Emby、LrcAPI。播放器管理端口仅绑定回环。安装不会代填账号、2FA、授权音乐源或 Emby 向导；没有安全的聊天入口和健康 wrapper 时 Bot 保持停止，状态会列出待配置项。示例通过 sudo 安装，后续维护也使用相同权限。
+
+详见[中文完整指南](docs/ONE_COMMAND.zh-CN.md)：私有 JSON 配置、目录布局、断点续装、Cookie 持久化、包含媒体与镜像的停机备份、离线源归档及恢复切换。手动 Compose 部署继续见[运维手册](docs/OPERATIONS.zh-CN.md)。完整套件会启用歌词、SABR 和自动认证配置，与手动模板的默认关闭选项不同；Docker socket 配置需要信任部署主机。
 
 **同一个 Telegram token 只能有一个轮询器。** 已有生产服务时，先备份并安排切换，不要直接在旁边启动第二套 bot。建议为隔离验收单独申请测试 bot。
 
@@ -74,6 +72,8 @@ python3 -m venv .venv
 ## 文档与许可
 
 - [中文运维手册](docs/OPERATIONS.zh-CN.md) · [Operations guide](docs/OPERATIONS.en.md)
+- [一命令部署、备份与恢复](docs/ONE_COMMAND.zh-CN.md) · [English guide](docs/ONE_COMMAND.en.md)
+- [固定依赖与许可来源](deploy/SOURCES.md) · [私有配置示例](deploy/private-config.example.json)
 - [LX / SQ 配置与统一音乐](docs/MUSIC_SOURCES.zh-CN.md) · [English guide](docs/MUSIC_SOURCES.en.md)
 - [LX 后端部署](services/lx-music/README.md) · [SQ 后端部署与任务补丁](services/sq-music/README.md)
 - [YouTube Music、视频、字幕与 Cookie](docs/YOUTUBE.zh-CN.md) · [English guide](docs/YOUTUBE.en.md)

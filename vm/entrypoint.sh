@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 umask 077
 DATA_DIR=${DATA_DIR:-/data}
-IMAGE_URL=${UBUNTU_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}
-IMAGE_SHA256=${UBUNTU_IMAGE_SHA256:-}
+IMAGE_URL=${UBUNTU_IMAGE_URL:-https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img}
+IMAGE_SHA256=${UBUNTU_IMAGE_SHA256:-04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94}
 VM_MEMORY=${VM_MEMORY:-4096}
 VM_CPUS=${VM_CPUS:-2}
 VM_DISK_SIZE=${VM_DISK_SIZE:-32G}
@@ -23,14 +23,13 @@ if [[ ! -f "${key}" ]]; then ssh-keygen -q -t ed25519 -N '' -f "${key}"; fi
 chmod 0600 "${key}"
 if [[ ! -f "${base}" ]]; then
   curl --fail --location --retry 5 --output "${base}.tmp" "${IMAGE_URL}"
-  if [[ -n "${IMAGE_SHA256}" ]]; then
-    [[ "${IMAGE_SHA256}" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Invalid image SHA-256.' >&2; exit 1; }
-    printf '%s  %s\n' "${IMAGE_SHA256}" "${base}.tmp" | sha256sum -c -
-  else
-    echo 'No Ubuntu image checksum supplied; verify UBUNTU_IMAGE_SHA256 before production use.' >&2
-  fi
+  [[ "${IMAGE_SHA256}" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Invalid image SHA-256.' >&2; exit 1; }
+  printf '%s  %s\n' "${IMAGE_SHA256}" "${base}.tmp" | sha256sum -c -
   mv "${base}.tmp" "${base}"
 fi
+# A resumed install must also reject a corrupted or replaced cached base.
+[[ "${IMAGE_SHA256}" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Invalid image SHA-256.' >&2; exit 1; }
+printf '%s  %s\n' "${IMAGE_SHA256}" "${base}" | sha256sum -c -
 if [[ ! -f "${disk}" ]]; then qemu-img create -f qcow2 -F qcow2 -b "${base}" "${disk}" "${VM_DISK_SIZE}"; fi
 cat >"${DATA_DIR}/meta-data" <<'EOF'
 instance-id: apple-music-wrapper-vm

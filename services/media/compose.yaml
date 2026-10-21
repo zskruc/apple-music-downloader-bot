@@ -1,0 +1,107 @@
+# Optional official media services. Profiles are independent; external players
+# can be used instead. No host networking, Docker socket or media write access.
+x-media-log: &media-log
+  driver: json-file
+  options: {max-size: 10m, max-file: "3"}
+
+x-apple-music: &apple-music
+  type: bind
+  source: ${MUSIC_PATH:?Set the bot music library path}
+  target: /music/apple
+  read_only: true
+  bind: {create_host_path: false}
+x-youtube-music: &youtube-music
+  type: bind
+  source: ${YOUTUBE_MUSIC_PATH:?Set the YouTube music library path}
+  target: /music/youtube
+  read_only: true
+  bind: {create_host_path: false}
+x-bilibili-music: &bilibili-music
+  type: bind
+  source: ${BILIBILI_MUSIC_PATH:?Set the Bilibili music library path}
+  target: /music/bilibili
+  read_only: true
+  bind: {create_host_path: false}
+
+services:
+  # The installer sets these only for selected internal services. Preserving
+  # empty/external settings avoids redirecting an existing personal library.
+  bot:
+    environment:
+      NAVIDROME_URL: ${NAVIDROME_URL:-}
+      EMBY_URL: ${EMBY_URL:-}
+      YT_LRCAPI_URL: ${YT_LRCAPI_URL:-}
+
+  navidrome:
+    profiles: [navidrome]
+    image: ${NAVIDROME_IMAGE:-navidrome/navidrome@sha256:38dc2727bfcfd5ede290f8ada114fc90368146f265ae4701ddddbcbe2a44ee52}
+    user: ${PUID:-1000}:${PGID:-1000}
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      ND_DATAFOLDER: /data
+      ND_MUSICFOLDER: /music
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info
+    ports: ["127.0.0.1:${NAVIDROME_HOST_PORT:-14533}:4533"]
+    volumes:
+      - type: bind
+        source: ${NAVIDROME_DATA_PATH:?Set a separate Navidrome data directory}
+        target: /data
+        bind: {create_host_path: false}
+      - *apple-music
+      - *youtube-music
+      - *bilibili-music
+    restart: unless-stopped
+    logging: *media-log
+
+  emby:
+    profiles: [emby]
+    platform: linux/amd64
+    image: ${EMBY_IMAGE:-emby/embyserver@sha256:7082c63b10a2fcb3805a7eaebba407d5723bc57c085c9f0b29b7d0a702765cc1}
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      UID: ${PUID:-1000}
+      GID: ${PGID:-1000}
+      GIDLIST: ${PGID:-1000}
+    ports: ["127.0.0.1:${EMBY_HOST_PORT:-18096}:8096"]
+    volumes:
+      - type: bind
+        source: ${EMBY_DATA_PATH:?Set a separate Emby config directory}
+        target: /config
+        bind: {create_host_path: false}
+      - *apple-music
+      - *youtube-music
+      - *bilibili-music
+      - type: bind
+        source: ${YOUTUBE_VIDEO_PATH:?Set the YouTube video library path}
+        target: /video/YouTube
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${BILIBILI_VIDEO_PATH:?Set the Bilibili video library path}
+        target: /video/Bilibili
+        read_only: true
+        bind: {create_host_path: false}
+    restart: unless-stopped
+    logging: *media-log
+
+  lrcapi:
+    profiles: [lrcapi]
+    image: ${LRCAPI_IMAGE:-hisatri/lrcapi@sha256:9efbf412d3c0f87e2f090954865666df2268ae2f14f104f9f430868e6abef2de}
+    command: [python, /app/app.py, --ip, 0.0.0.0, --port, "28883"]
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # The existing bot does not send API_AUTH. Access is private network and
+      # host loopback; no external API, translation, or proxy account is supplied.
+      API_AUTH: ""
+    ports: ["127.0.0.1:${LRCAPI_HOST_PORT:-28883}:28883"]
+    volumes:
+      - type: bind
+        source: ${LRCAPI_DATA_PATH:?Set a separate LrcAPI config directory}
+        target: /app/config
+        bind: {create_host_path: false}
+      - *apple-music
+      - *youtube-music
+      - *bilibili-music
+    restart: unless-stopped
+    logging: *media-log

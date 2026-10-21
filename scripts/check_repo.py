@@ -10,7 +10,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 IGNORED = {".git", ".venv", ".venv312", "__pycache__", ".pytest_cache"}
-FORBIDDEN_PARTS = {"state", "legacy-vm-data", "wrapper-data", "backups", "logs", "node_modules"}
+FORBIDDEN_PARTS = {"state", "private", "legacy-vm-data", "wrapper-data", "backups", "logs", "node_modules"}
 FORBIDDEN_SUFFIXES = {".pem", ".key", ".wvd", ".qcow2", ".img", ".iso", ".sqlite3", ".db", ".log"}
 # This source module handles private Cookie copies; it contains no session data.
 COOKIE_SOURCE_FILES = {Path("bot/yt_dlp_readonly_cookies.py")}
@@ -44,6 +44,7 @@ def main() -> int:
             continue
         if (any(part in FORBIDDEN_PARTS for part in relative.parts)
                 or path.suffix in FORBIDDEN_SUFFIXES
+                or (path.name.startswith("private-config") and not path.name.endswith(".example.json"))
                 or (path.name.startswith(".env") and path.name != ".env.example")
                 or ("cookies" in path.name.lower() and relative not in COOKIE_SOURCE_FILES)):
             failures.append((relative, "runtime or credential file"))
