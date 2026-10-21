@@ -28,6 +28,12 @@ FORMAT = "amdl-private-snapshot"
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 RUNTIME_TARGETS = {"/var/run/docker.sock", "/run/docker.sock"}
+MYSQL_DATA_TARGET = "/var/lib/mysql"
+MYSQL_SOCKET_ALIAS = "/var/run/mysqld/mysqld.sock"
+# Official 5.7.44 source: docker-library/mysql commit
+# 9678ed1d27794ae9529c43b4411e30f981ce39ea, 5.7/Dockerfile.oracle
+# lines 74-79 and 5.7/docker-entrypoint.sh mysql_socket_fix(). The entrypoint
+# recreates this transient alias; it is not a database or account-state file.
 MEDIA_TARGETS = {"/music", "/media", "/library", "/youtube-music", "/youtube-video",
                  "/bilibili-music", "/bilibili-video", "/sq-staging", "/server/music/_open"}
 MANIFEST_LIMIT = 64 * 1024 * 1024
@@ -309,9 +315,66 @@ def _hash_file(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def _scan(root: Path, prefix: str) -> list[dict[str, Any]]:
+def _mysql_socket_metadata(path: Path) -> dict[str, Any] | None:
+    """Recognize only the official MySQL data-root socket, without following it."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(metadata.st_mode):
+        link = os.readlink(path)
+        if link != MYSQL_SOCKET_ALIAS:
+            return None
+        kind = "symlink"
+    elif stat.S_ISSOCK(metadata.st_mode):
+        kind, link = "socket", None
+    else:
+        return None
+    return {"kind": kind, "link": link, "mode": stat.S_IMODE(metadata.st_mode) & 0o777,
+            "uid": metadata.st_uid, "gid": metadata.st_gid, "mtime_ns": metadata.st_mtime_ns,
+            "device": metadata.st_dev, "inode": metadata.st_ino}
+
+
+def _mysql_runtime_omissions(mounts: list[dict[str, Any]], rows: list[dict[str, Any]],
+                             projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Call only after _offline. Require actual stopped-container mount evidence,
+    # rather than treating any file named mysql.sock as an expendable socket.
+    names = {project["id"]: project["project_name"] for project in projects}
+    result = {}
+    for mount in mounts:
+        if (mount.get("target") != MYSQL_DATA_TARGET or not mount.get("included")
+                or mount.get("source_kind") != "directory"):
+            continue
+        observed = [row for row in rows if row["project"] == names[mount["project_id"]]
+                    and row["service"] == mount["service"] and not row["running"]]
+        if not any(item.get("target") == MYSQL_DATA_TARGET and item.get("source") == mount["source"]
+                   for row in observed for item in row["mounts"]):
+            continue
+        path = Path(mount["source"]) / "mysql.sock"
+        metadata = _mysql_socket_metadata(path)
+        if metadata is None:
+            continue
+        relative = mount.get("source_relative", ".")
+        archive_path = f"data/{mount['source_id']}/" + (relative + "/" if relative != "." else "") + "mysql.sock"
+        result.setdefault(archive_path, {"path": archive_path, "source": str(path),
+                                        "source_id": mount["source_id"], "project_id": mount["project_id"],
+                                        "service": mount["service"], "target": MYSQL_DATA_TARGET + "/mysql.sock",
+                                        "reason": "mysql-runtime-socket", **metadata})
+    return list(result.values())
+
+
+def _scan(root: Path, prefix: str, runtime_omissions: dict[str, dict[str, Any]] | None = None,
+          omitted_seen: set[str] | None = None) -> list[dict[str, Any]]:
     result = []
     def visit(path: Path, archive_path: str):
+        if runtime_omissions and archive_path in runtime_omissions:
+            expected = runtime_omissions[archive_path]
+            actual = _mysql_socket_metadata(path)
+            if actual is None or any(expected.get(key) != value for key, value in actual.items()):
+                raise MigrationError("An omitted MySQL runtime socket changed while snapshotting.")
+            if omitted_seen is not None:
+                omitted_seen.add(archive_path)
+            return
         metadata = path.lstat()
         record = {"path": archive_path, "mode": stat.S_IMODE(metadata.st_mode) & 0o777,
                   "uid": metadata.st_uid, "gid": metadata.st_gid, "mtime_ns": metadata.st_mtime_ns}
@@ -351,8 +414,13 @@ def _file_sources(project_dir: Path, projects: list[dict[str, Any]], sources: li
     return result
 
 
-def _records(file_sources: list[tuple[Path, str]]) -> list[dict[str, Any]]:
-    records = [record for source, prefix in file_sources for record in _scan(source, prefix)]
+def _records(file_sources: list[tuple[Path, str]],
+             runtime_omissions: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    omissions = {item["path"]: item for item in runtime_omissions or []}
+    seen = set()
+    records = [record for source, prefix in file_sources for record in _scan(source, prefix, omissions, seen)]
+    if seen != omissions.keys():
+        raise MigrationError("An omitted MySQL runtime socket disappeared while snapshotting.")
     paths = [record["path"] for record in records]
     if len(paths) != len(set(paths)):
         raise MigrationError("Duplicate archive paths in snapshot coverage.")
@@ -412,8 +480,9 @@ def snapshot(project_dir: Path, destination: Path, include_media: bool = False,
     if any(_within(destination.resolve(), Path(source["path"])) for source in sources):
         raise MigrationError("Snapshot destination is inside a selected data source.")
     rows = _offline(projects, configs, sources)
+    runtime_omissions = _mysql_runtime_omissions(mounts, rows, projects)
     file_sources = _file_sources(project_dir, projects, sources)
-    records = _records(file_sources)
+    records = _records(file_sources, runtime_omissions)
     # Check again before creating a private bundle, not merely after it finishes.
     _offline(projects, configs, sources)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -441,11 +510,12 @@ def snapshot(project_dir: Path, destination: Path, include_media: bool = False,
                     "archive": {"name": "payload.tar", "sha256": payload_hash, "size": payload_size},
                     "coverage": {"all_persistent_mounts_accounted_for": True,
                                  "omitted_mounts": [item for item in mounts if not item["included"]],
+                                 "runtime_omissions": runtime_omissions,
                                  "media_retained_with_parent": [item for item in mounts if item.get("media_retained_with_parent")]},
                     "queue_policy": "offline byte-preserving snapshot; no task status normalization",
                     "ownership_policy": "original uid/gid recorded; restore does not automatically chown"}
         _validate_payload(staging / "payload.tar", manifest)
-        if records != _records(file_sources):
+        if records != _records(file_sources, runtime_omissions):
             raise MigrationError("Source data changed while snapshotting; bundle was not published.")
         _offline(projects, configs, sources)
         _write_json(staging / "manifest.json", manifest)
@@ -597,6 +667,32 @@ def _validate_coverage(manifest: dict[str, Any], records: dict[str, dict[str, An
         raise MigrationError("Snapshot does not declare complete persistent-source accounting.")
     if coverage.get("omitted_mounts") != [item for item in mounts if not item.get("included")]:
         raise MigrationError("Omitted-source coverage list differs from the mount ledger.")
+    omissions = coverage.get("runtime_omissions", [])
+    if not isinstance(omissions, list):
+        raise MigrationError("Invalid runtime-omission coverage ledger.")
+    seen = set()
+    for item in omissions:
+        if not isinstance(item, dict):
+            raise MigrationError("Invalid runtime-omission record.")
+        name = str(_safe_relative(item.get("path")))
+        matching = [mount for mount in mounts if mount.get("project_id") == item.get("project_id")
+                    and mount.get("service") == item.get("service") and mount.get("source_id") == item.get("source_id")
+                    and mount.get("target") == MYSQL_DATA_TARGET and mount.get("source_kind") == "directory"
+                    and mount.get("included") is True
+                    and str(Path(mount["source"]) / "mysql.sock") == item.get("source")]
+        expected_paths = {f"data/{mount['source_id']}/"
+                          + (mount.get("source_relative", ".") + "/" if mount.get("source_relative", ".") != "." else "")
+                          + "mysql.sock" for mount in matching}
+        if (name in seen or name in records or name not in expected_paths
+                or records.get(str(PurePosixPath(name).parent), {}).get("kind") != "directory"
+                or item.get("reason") != "mysql-runtime-socket" or item.get("target") != MYSQL_DATA_TARGET + "/mysql.sock"
+                or item.get("kind") not in {"symlink", "socket"}
+                or item.get("link") != (MYSQL_SOCKET_ALIAS if item["kind"] == "symlink" else None)):
+            raise MigrationError("Runtime omission is not the verified MySQL socket alias.")
+        for key in ("mode", "uid", "gid", "mtime_ns", "device", "inode"):
+            if not isinstance(item.get(key), int) or item[key] < 0:
+                raise MigrationError("Invalid runtime-socket metadata.")
+        seen.add(name)
 
 
 def _validate_payload(path: Path, manifest: dict[str, Any]) -> None:
@@ -693,6 +789,7 @@ def _restore_result(manifest: dict[str, Any], target_root: Path, config_dir: Pat
             "mounts": mounts, "env_files": env_files, "media_included": manifest.get("include_media", False),
             "omitted_sources": [source for source in manifest.get("sources", []) if not source["included"]],
             "media_retained_with_parent": manifest.get("coverage", {}).get("media_retained_with_parent", []),
+            "runtime_omissions": manifest.get("coverage", {}).get("runtime_omissions", []),
             "images_included": manifest.get("include_images", False), "images": manifest.get("images", []),
             "image_archive": str(target_root / "_images/images.tar") if manifest.get("include_images") else None,
             "ownership_policy": manifest.get("ownership_policy"),

@@ -53,7 +53,7 @@ class InstallerTests(unittest.TestCase):
             installer.validate_root(link / "new")
 
     def test_shared_storage_and_existing_git_checkout_are_refused(self):
-        for shared in (Path("/volume1/docker"), Path("/Users/apple/LocalWork"), Path("/opt")):
+        for shared in (Path("/volume1/docker"), Path("/Users/example/LocalWork"), Path("/opt")):
             with self.subTest(shared=shared), self.assertRaises(ValueError):
                 installer.validate_root(shared)
         checkout = self.base / "existing-checkout"
@@ -98,7 +98,9 @@ class InstallerTests(unittest.TestCase):
         config = self.base / "private.json"
         config.write_text(json.dumps({"env": {}, "restore_services": {"old-vm": "legacy-wrapper"}}))
         subject = self.subject(config=config, restore=self.base / "bundle")
-        plan = {"mounts": [{"service": "old-vm", "target": "/data", "restored_path": str(self.root / "data/vm")}], "images": []}
+        plan = {"mounts": [{"service": "old-vm", "target": "/data", "restored_path": str(self.root / "data/vm")}],
+                "images_included": True, "image_archive": str(self.root / "data/_images/images.tar"),
+                "images": [{"service": "old-vm", "image_id": "sha256:" + "1" * 64}]}
         from deploy import migration
         def restore(bundle, root, *, plan_validator):
             self.assertEqual(root, self.root)

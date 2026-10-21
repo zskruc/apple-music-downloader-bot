@@ -74,6 +74,11 @@ def normalize_restore_plan(plan: dict, service_map: dict[str, str] | None = None
         if name:
             project_names[name] = project
     consumed = set()
+    legacy_vm_aliases = set()
+    legacy_vm_images = set()
+
+    def origin(record):
+        return (record.get("original_project_id") or record.get("original_project", ""), record["original_service"])
 
     def translate(record):
         if not isinstance(record, dict):
@@ -101,6 +106,8 @@ def normalize_restore_plan(plan: dict, service_map: dict[str, str] | None = None
         if project and project.get("id"):
             record["original_project_id"] = project["id"]
         record["service"] = target
+        if target == "legacy-wrapper" and old != target:
+            legacy_vm_aliases.add(origin(record))
         return record
 
     originals = normalized.get("service_mapping_sources", {})
@@ -137,6 +144,8 @@ def normalize_restore_plan(plan: dict, service_map: dict[str, str] | None = None
         image = record.get("image_id")
         if not isinstance(image, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
             raise RestorePlanError("Invalid restored image identity.")
+        if record["service"] == "legacy-wrapper":
+            legacy_vm_images.add(origin(record))
         name = record["service"]
         previous = image_targets.get(name)
         if previous is not None:
@@ -147,6 +156,13 @@ def normalize_restore_plan(plan: dict, service_map: dict[str, str] | None = None
             continue
         image_targets[name] = record
         images.append(record)
+    if legacy_vm_aliases:
+        # Old service names identify an independently deployed VM runtime. Its
+        # disks must use the archived entrypoint, not a fresh public VM layout.
+        archive = normalized.get("image_archive")
+        if (normalized.get("images_included") is not True or not isinstance(archive, str) or not archive
+                or not legacy_vm_aliases.issubset(legacy_vm_images)):
+            raise RestorePlanError("A legacy VM service alias requires its original image archive; data-only heterogeneous VM restore needs separate review.")
     if consumed != mapping.keys():
         raise RestorePlanError("An explicit service mapping matches no source record; review the migration plan.")
     normalized["mounts"], normalized["images"] = mounts, images

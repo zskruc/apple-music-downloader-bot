@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import socket
 import tarfile
 import tempfile
 import unittest
@@ -74,6 +75,122 @@ class SnapshotFixture(unittest.TestCase):
         digest, size = migration._hash_file(self.bundle / "payload.tar")
         manifest["archive"].update(sha256=digest, size=size)
         self.update_manifest(manifest)
+
+
+class MySQLRuntimeSnapshotTests(SnapshotFixture):
+    def observed_mysql_mount(self):
+        row = next(row for row in self.rows if row["service"] == "mysql")
+        row["mounts"] = [{"type": "volume", "source": str(self.mysql),
+                          "target": "/var/lib/mysql", "read_only": False}]
+
+    def test_offline_mysql_socket_alias_is_ledgered_without_losing_database_bytes(self):
+        self.observed_mysql_mount()
+        alias = self.mysql / "mysql.sock"
+        alias.symlink_to(migration.MYSQL_SOCKET_ALIAS)
+        database = (self.mysql / "database.dat").read_bytes()
+        manifest = self.snapshot()
+        omissions = manifest["coverage"]["runtime_omissions"]
+        self.assertEqual(len(omissions), 1)
+        omission = omissions[0]
+        self.assertEqual(omission["source"], str(alias))
+        self.assertEqual(omission["kind"], "symlink")
+        self.assertEqual(omission["link"], "/var/run/mysqld/mysqld.sock")
+        self.assertEqual(omission["target"], "/var/lib/mysql/mysql.sock")
+        self.assertEqual(omission["reason"], "mysql-runtime-socket")
+        self.assertEqual(os.readlink(alias), migration.MYSQL_SOCKET_ALIAS)
+        self.assertNotIn(omission["path"], [item["path"] for item in manifest["files"]])
+        with tarfile.open(self.bundle / "payload.tar") as payload:
+            self.assertNotIn(omission["path"], payload.getnames())
+        result = migration.restore_bundle(self.bundle, self.root / "new-host")
+        restored = Path(result["source_map"][str(self.mysql)])
+        self.assertEqual((restored / "database.dat").read_bytes(), database)
+        self.assertFalse((restored / "mysql.sock").exists())
+        self.assertFalse((restored / "mysql.sock").is_symlink())
+        self.assertEqual(result["runtime_omissions"], omissions)
+
+    def test_stopped_mysql_stale_unix_socket_is_omitted_not_restored(self):
+        self.observed_mysql_mount()
+        # A relative bind avoids platform AF_UNIX pathname-length limits.
+        previous = os.getcwd()
+        with socket.socket(socket.AF_UNIX) as stale:
+            try:
+                os.chdir(self.mysql)
+                stale.bind("mysql.sock")
+            finally:
+                os.chdir(previous)
+        manifest = self.snapshot()
+        self.assertEqual(manifest["coverage"]["runtime_omissions"][0]["kind"], "socket")
+        self.assertTrue((self.mysql / "mysql.sock").exists())
+        result = migration.restore_bundle(self.bundle, self.root / "new-host")
+        restored = Path(result["source_map"][str(self.mysql)])
+        self.assertFalse((restored / "mysql.sock").exists())
+        self.assertEqual((restored / "database.dat").read_bytes(), (self.mysql / "database.dat").read_bytes())
+
+    def test_ordinary_file_named_mysql_socket_is_preserved(self):
+        self.observed_mysql_mount()
+        (self.mysql / "mysql.sock").write_bytes(b"ordinary persistent file must survive")
+        manifest = self.snapshot()
+        self.assertEqual(manifest["coverage"]["runtime_omissions"], [])
+        result = migration.restore_bundle(self.bundle, self.root / "new-host")
+        restored = Path(result["source_map"][str(self.mysql)])
+        self.assertEqual((restored / "mysql.sock").read_bytes(), b"ordinary persistent file must survive")
+
+    def test_other_external_links_are_never_treated_as_runtime_sockets(self):
+        self.observed_mysql_mount()
+        outside = self.root / "outside"
+        outside.write_text("persistent outside fixture")
+        for directory, name, target in ((self.mysql, "mysql.sock", str(outside)),
+                                        (self.mysql, "other.sock", migration.MYSQL_SOCKET_ALIAS),
+                                        (self.state, "mysql.sock", migration.MYSQL_SOCKET_ALIAS)):
+            with self.subTest(directory=directory.name, name=name):
+                alias = directory / name
+                alias.symlink_to(target)
+                try:
+                    with self.assertRaises((migration.MigrationError, FileNotFoundError)):
+                        self.snapshot()
+                    self.assertFalse(self.bundle.exists())
+                finally:
+                    alias.unlink()
+
+    def test_alias_requires_actual_stopped_container_data_mount_evidence(self):
+        alias = self.mysql / "mysql.sock"
+        alias.symlink_to(migration.MYSQL_SOCKET_ALIAS)
+        with self.assertRaises((migration.MigrationError, FileNotFoundError)):
+            self.snapshot()
+        self.observed_mysql_mount()
+        next(row for row in self.rows if row["service"] == "mysql")["running"] = True
+        with self.assertRaisesRegex(migration.MigrationError, "stopped"):
+            self.snapshot()
+        self.assertFalse(self.bundle.exists())
+
+    def test_omitted_alias_replacement_or_disappearance_prevents_publication(self):
+        self.observed_mysql_mount()
+        alias = self.mysql / "mysql.sock"
+        original = migration._write_payload
+        for action in ("replace", "remove"):
+            with self.subTest(action=action):
+                alias.symlink_to(migration.MYSQL_SOCKET_ALIAS)
+                def mutate(*args):
+                    original(*args)
+                    alias.unlink()
+                    if action == "replace":
+                        alias.symlink_to(migration.MYSQL_SOCKET_ALIAS)
+                with mock.patch.object(migration, "_write_payload", side_effect=mutate):
+                    with self.assertRaisesRegex(migration.MigrationError, "runtime socket"):
+                        self.snapshot()
+                self.assertFalse(self.bundle.exists())
+                alias.unlink(missing_ok=True)
+
+    def test_tampered_runtime_omission_ledger_is_rejected_before_restore(self):
+        self.observed_mysql_mount()
+        (self.mysql / "mysql.sock").symlink_to(migration.MYSQL_SOCKET_ALIAS)
+        manifest = self.snapshot()
+        manifest["coverage"]["runtime_omissions"][0]["link"] = "/another/socket"
+        self.update_manifest(manifest)
+        target = self.root / "new-host"
+        with self.assertRaisesRegex(migration.MigrationError, "MySQL socket alias"):
+            migration.restore_bundle(self.bundle, target)
+        self.assertFalse(target.exists())
 
 
 class OfflineSnapshotTests(SnapshotFixture):

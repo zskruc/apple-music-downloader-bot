@@ -14,6 +14,7 @@ ALLOWED = {"bot", "wrapper", "legacy-wrapper", "lxserver", "sqmusic-server"}
 
 def fixture(service="legacy-vm", project="old-downloads", identifier="main", path="/new/data/vm"):
     return {"projects": [{"id": identifier, "project_name": project}], "source_map": {"/old/vm": path},
+            "images_included": True, "image_archive": "/new/data/_images/images.tar",
             "mounts": [{"project_id": identifier, "service": service, "target": "/data", "source": "/old/vm",
                         "restored_path": path, "included": True, "read_only": False}],
             "images": [{"project": project, "service": service, "image_id": IMAGE}]}
@@ -37,6 +38,46 @@ class RestoreServiceMappingTests(unittest.TestCase):
         self.assertEqual({item["service"] for item in result["mounts"]}, {"legacy-wrapper", "wrapper"})
         self.assertEqual({item["service"] for item in result["images"]}, {"legacy-wrapper", "wrapper"})
         self.assertEqual(result["mounts"][0]["original_service"], "legacy-vm")
+
+    def test_legacy_vm_alias_requires_full_image_archive_and_matching_original_image(self):
+        mapping = {"legacy-vm": "legacy-wrapper"}
+        cases = [
+            {"images_included": False},
+            {"images_included": "true"},
+            {"image_archive": None},
+            {"image_archive": ""},
+            {"images": []},
+            {"images": [{"project": "other-project", "service": "legacy-vm", "image_id": IMAGE}]},
+            {"images": [{"project": "old-downloads", "service": "legacy-wrapper", "image_id": IMAGE}]},
+        ]
+        for changes in cases:
+            plan = fixture()
+            plan.update(changes)
+            original = deepcopy(plan)
+            with self.subTest(changes=changes), self.assertRaisesRegex(RestorePlanError, "original image archive"):
+                normalize_restore_plan(plan, mapping, allowed_services=ALLOWED)
+            self.assertEqual(plan, original)
+        plan = fixture()
+        plan["images"][0]["image_id"] = "invalid-image"
+        with self.assertRaisesRegex(RestorePlanError, "image identity"):
+            normalize_restore_plan(plan, mapping, allowed_services=ALLOWED)
+
+    def test_canonical_managed_vm_without_images_remains_supported(self):
+        for image_metadata in ([], [{"project": "old-downloads", "service": "legacy-wrapper", "image_id": IMAGE}]):
+            plan = fixture(service="legacy-wrapper")
+            plan.update({"images_included": False, "image_archive": None, "images": image_metadata})
+            result = normalize_restore_plan(plan, allowed_services=ALLOWED)
+            self.assertEqual(result["mounts"][0]["service"], "legacy-wrapper")
+            self.assertEqual(len(result["images"]), len(image_metadata))
+            self.assertFalse(result["images_included"])
+
+    def test_legacy_vm_image_requirement_survives_normalized_resume(self):
+        mapping = {"legacy-vm": "legacy-wrapper"}
+        result = normalize_restore_plan(fixture(), mapping, allowed_services=ALLOWED)
+        self.assertEqual(normalize_restore_plan(result, mapping, allowed_services=ALLOWED), result)
+        result["images_included"] = False
+        with self.assertRaisesRegex(RestorePlanError, "original image archive"):
+            normalize_restore_plan(result, mapping, allowed_services=ALLOWED)
 
     def test_unknown_persistent_service_cannot_silently_disappear(self):
         with self.assertRaisesRegex(RestorePlanError, "explicit restore_services"):

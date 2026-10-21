@@ -117,6 +117,8 @@ sudo python3 /srv/apple-music-downloader/source/install.py backup --root /srv/ap
 
 **默认包含媒体和 Docker 镜像归档。** 还包括私有配置、持久状态、浏览器 profile、Cookie、wrapper 会话、VM、LX/SQ 数据及播放器配置；文件摘要与挂载覆盖清单用于恢复核对。目标必须是源目录外一个不存在的新目录。备份不会停止无关项目，也不自动接管独立 LX/SQ 项目；旧多项目迁移必须先明确登记项目与所有持久挂载，参见 `deploy.migration inventory` / `snapshot` 的帮助。
 
+完整物理备份需要读取容器用户拥有的数据库文件，通常应使用 sudo。MySQL 可重建的固定 socket 会单独记入 `runtime_omissions`，不会当作持久数据复制；其他未知外部链接仍会使备份拒绝。恢复到新目录后，媒体所有权按选定的 UID/GID 调整，保留文件权限。
+
 确实要省略时才加 `--without-media` 或 `--without-images`。省略会写入覆盖记录；媒体须另行复制，镜像须重新拉取/构建。迁移最终快照另用 `--leave-stopped`：成功后保留原服务停止，失败仍尝试恢复原本运行的服务。不要把它与旧手动流程的 `ops/stack.sh backup` 混为一谈：后者是升级用私有快照，默认不含媒体，规则也不同。
 
 备份未加密，含完整凭据、登录态和媒体，禁止作为 release、issue 或 CI artifact 上传。日志也可能含私密内容。备份后检查 `status` 与 `state/maintenance.json`；恢复服务失败需处理后再接收新任务。队列字节会保留，原服务恢复后也可能继续执行 queued 任务，因此“备份完成”不等于旧 Bot 已停止。

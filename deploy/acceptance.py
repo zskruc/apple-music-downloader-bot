@@ -21,17 +21,87 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 import urllib.parse
 
-from deploy.installer import OWNER_LABEL, RESTORE_TASK_WRITERS, SOURCE, atomic_json, read_env, read_json, validate_root
+from deploy.installer import OWNER_LABEL, RESTORE_TASK_WRITERS, SOURCE, STAGES, atomic_json, read_env, read_json, validate_root
 from deploy import manage
 
 
 class AcceptanceError(RuntimeError):
     """A fixed, credential-free failure category; raw diagnostics stay private."""
+
+
+STAGE_DIAGNOSTIC_LOGS = {
+    "configuration": ("compose-validation",),
+    "credentials": ("sq-private-prepare",),
+    "images": ("restore-image-archive", "verify-restored-image"),
+    "dependencies": ("sq-dependency-build",),
+    "build": ("core-build",),
+    "pull": ("fixed-images",),
+    "containers": ("create-stopped-services",),
+    "services": ("start-core-services",),
+    "sq_configuration": ("sq-schema-configure", "reload-sq-config"),
+    "activation": ("activate-restored-queue-services", "activate-bot-and-watchdogs", "hold-restored-task-writers", "hold-unconfigured-bot"),
+}
+
+
+def credential_values(values):
+    """Select credentials, never auth retry counts, flags, paths or image tags."""
+    result = []
+    for key, value in values.items():
+        credential = re.search(r"(?:^|_)(?:PASSWORD|TOKEN|SECRET|API_KEY)$", key) or key.endswith("_WEBHOOK_URL")
+        proxy_url = (key.endswith("_PROXY_URL") or key.endswith("_PROXY")) and "://" in value
+        if value and (credential or proxy_url):
+            result.append(value)
+    return result
+
+
+def installer_progress(root):
+    """Return fixed stage names only; ignore arbitrary values in private state."""
+    try:
+        state = read_json(root / "state/install.json")
+        if not state:
+            return "preparing"
+        if state.get("status") == "installed":
+            return "installed"
+        failed = state.get("failed_stage")
+        if failed in STAGES:
+            return "failed at " + failed
+        completed = state.get("completed", [])
+        if not isinstance(completed, list):
+            return "preparing"
+        stage = next((stage for stage in STAGES if stage not in completed), None)
+        return stage if stage else "finishing"
+    except (OSError, ValueError, TypeError, AttributeError):
+        return "preparing"
+
+
+@contextmanager
+def installation_heartbeat(root):
+    if root is None:
+        yield
+        return
+    stopped = threading.Event()
+    name = root.name if root.name in {"original", "restored"} else "installation"
+    def emit():
+        print("Installer progress: " + name + " " + installer_progress(root), flush=True)
+    def heartbeat():
+        while not stopped.is_set():
+            emit()
+            if stopped.wait(5):
+                break
+    worker = threading.Thread(target=heartbeat, name="acceptance-installer-progress", daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        worker.join(timeout=1)
+        emit()
 
 
 def safe_failure(error):
@@ -145,15 +215,16 @@ class Harness:
         self.phase = phase
         print("Acceptance stage: " + phase, flush=True)
 
-    def command(self, arguments, label, *, timeout=180, capture=False, input_text=None, allow_failure=False):
+    def command(self, arguments, label, *, timeout=180, capture=False, input_text=None, allow_failure=False, progress_root=None):
         log = self.root / "private-logs" / (label + ".log")
         log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         descriptor = os.open(str(log), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             try:
-                result = subprocess.run(list(arguments), cwd=str(self.source), input=input_text,
-                                        stdout=subprocess.PIPE if capture else output, stderr=subprocess.STDOUT,
-                                        text=True, check=False, timeout=timeout, env=clean_environment(self.source))
+                with installation_heartbeat(progress_root):
+                    result = subprocess.run(list(arguments), cwd=str(self.source), input=input_text,
+                                            stdout=subprocess.PIPE if capture else output, stderr=subprocess.STDOUT,
+                                            text=True, check=False, timeout=timeout, env=clean_environment(self.source))
             except (OSError, subprocess.SubprocessError):
                 raise AcceptanceError(label.replace("-", "_") + "_process_failed") from None
             if capture:
@@ -214,7 +285,7 @@ class Harness:
         value["env"]["START_BOT"] = "true"
         atomic_json(config, value)
         self.command([sys.executable, str(self.source / "install.py"), "resume", "--root", str(self.restored),
-                      "--config", str(config)], "restored-cutover-resume", timeout=1800)
+                      "--config", str(config)], "restored-cutover-resume", timeout=1800, progress_root=self.restored)
 
     def install(self, root, restore=None):
         values = allocate_ports()
@@ -229,7 +300,7 @@ class Harness:
                    "--with-media-servers", "--config", str(config)]
         if restore:
             command += ["--restore", str(restore)]
-        self.command(command, root.name + "-install", timeout=14400)
+        self.command(command, root.name + "-install", timeout=14400, progress_root=root)
 
     def http(self, port, path, accepted=(200,), payload=None, headers=None):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -375,6 +446,8 @@ class Harness:
         atomic_json(state / "acceptance-marker.json", {"synthetic": True, "marker": marker})
         media = Path(values["MUSIC_PATH"]) / ".acceptance-marker"
         media.write_text(marker, encoding="utf-8")
+        os.chown(str(media), int(values["PUID"]), int(values["PGID"]))
+        os.chmod(str(media), 0o600)
         database_path = state / "task-cards.sqlite3"
         with sqlite3.connect(str(database_path)) as database:
             database.executescript(source_task_schema(self.source))
@@ -388,13 +461,27 @@ class Harness:
                          "lx_auth": hashlib.sha256(Path(values["LX_FRONTEND_AUTH_PATH"]).read_bytes()).hexdigest()}
         return marker
 
-    def verify_fixture(self):
+    def verify_fixture(self, runtime_media=False):
         values = read_env(self.restored / "config/private.env")
         state = Path(values["STATE_PATH"])
         if read_json(state / "acceptance-marker.json").get("marker") != self.expected["marker"]:
             raise AcceptanceError("persistent_state_marker_changed")
         if (Path(values["MUSIC_PATH"]) / ".acceptance-marker").read_text() != self.expected["marker"]:
             raise AcceptanceError("included_media_marker_changed")
+        if runtime_media:
+            rows = self.owned_containers(self.restored)
+            aligner = next((row for row in rows if row["service"] == "word-lyrics-nas-aligner" and row["running"]), None)
+            if aligner is None:
+                raise AcceptanceError("restored_media_reader_not_running")
+            # Run as the selected media UID, not the privileged installer. The
+            # marker travels on stdin and only an exit status is returned.
+            check = ("import pathlib,sys\nexpected=sys.stdin.read()\n"
+                     "try:\n result=pathlib.Path('/music/.acceptance-marker').read_text()==expected\n"
+                     "except (OSError,UnicodeError):\n result=False\n"
+                     "sys.exit(0 if result else 1)\n")
+            self.command(["docker", "exec", "--user", str(int(values["PUID"])) + ":" + str(int(values["PGID"])), "-i", aligner["id"],
+                          "python", "-c", check], "restored-media-user-read", input_text=self.expected["marker"], timeout=20)
+            self.result["checks"]["restored_private_media_readable_by_selected_uid"] = True
         with sqlite3.connect((state / "task-cards.sqlite3").resolve().as_uri() + "?mode=ro", uri=True) as database:
             row = database.execute("SELECT id,status,job_json FROM task_cards WHERE id=?", (self.expected["task_id"],)).fetchone()
         if not row or row[1] != "queued" or json.loads(row[2]).get("marker") != self.expected["marker"]:
@@ -420,44 +507,50 @@ class Harness:
         for root in (self.original, self.restored):
             try:
                 values = read_env(root / "config/private.env")
-                for key, value in values.items():
-                    if re.search(r"PASSWORD|TOKEN|SECRET|AUTH|COOKIE|PROXY|WEBHOOK|API_KEY", key):
-                        private_values.append(value)
+                private_values.extend(credential_values(values))
                 for key in ("LX_FRONTEND_AUTH_PATH", "SQ_AUTH_PATH"):
                     path = Path(values.get(key, "/nonexistent"))
                     if path.is_file() and not path.is_symlink():
                         text = path.read_text(encoding="utf-8")
                         if key == "SQ_AUTH_PATH":
-                            private_values.extend(str(value) for value in json.loads(text).values())
+                            private_values.extend(value for value in json.loads(text).values() if isinstance(value, str) and value)
                         else:
                             private_values.append(text.strip())
             except (OSError, ValueError):
                 pass
-        candidates = []
+        candidates, summaries = [], []
         for root in (self.original, self.restored):
-            candidates.extend([self.root / "private-logs" / (root.name + "-install.log"),
-                               root / "state/logs/core-build.log", root / "state/logs/fixed-images.log",
-                               root / "state/logs/sq-dependency-build.log"])
             state = read_json(root / "state/install.json")
-            if state.get("failed_stage"):
+            failed = state.get("failed_stage")
+            if failed in STAGES:
                 self.result.setdefault("installer_failures", []).append({"installation": root.name,
-                    "stage": re.sub(r"[^a-z_]", "", str(state["failed_stage"]))[:40]})
+                    "stage": failed})
+                for label in STAGE_DIAGNOSTIC_LOGS.get(failed, ()):
+                    candidates.append((root.name + ":" + failed + ":" + label, root / "state/logs" / (label + ".log")))
+            for label in (root.name + "-install", "restored-cutover-resume" if root == self.restored else ""):
+                if label:
+                    summaries.append((root.name + ":installer", self.root / "private-logs" / (label + ".log")))
         safe = []
-        for path in candidates:
+        for label, path in candidates + summaries:
             if not path.is_file() or path.is_symlink():
                 continue
             with path.open("rb") as handle:
                 handle.seek(max(0, path.stat().st_size - 65536))
                 lines = handle.read(65536).decode("utf-8", errors="replace").splitlines()
             for line in lines:
-                # Only installer/build/pull/compiler output, never container
+                # Only the failed installer stage and installer summaries,
+                # never successful build logs, container
                 # application logs, Cookie files, Config.Env, SQL or API bodies.
                 if re.search(r"(?i)cookie|authorization|bearer|password|secret|token|private.key", line):
                     continue
-                if not re.search(r"(?i)installation stage|installation incomplete|error|failed|fatal|could not|not found|no matching distribution|^\s*#\d+", line):
+                if not re.search(r"(?i)installation stage|installation incomplete|error|failed|fatal|could not|not found|no matching distribution|did not complete|exception|traceback|^\s*E:", line):
                     continue
-                safe.append(redact_diagnostic(line, private_values, self.root, self.source))
-        self.result["safe_build_diagnostics"] = safe[-60:]
+                safe.append("[" + label + "] " + redact_diagnostic(line, private_values, self.root, self.source))
+                if len(safe) >= 60:
+                    break
+            if len(safe) >= 60:
+                break
+        self.result["safe_build_diagnostics"] = safe
 
     def run(self):
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -494,7 +587,7 @@ class Harness:
                 self.approve_restored_cutover()
                 self.progress("restored_real_readiness")
                 self.wait_ready(self.restored)
-                self.verify_fixture()
+                self.verify_fixture(runtime_media=True)
                 self.result["checks"]["restored_queue_services_released_after_approval"] = True
                 self.result["passed"] = True
                 self.result["stage"] = "completed"
@@ -541,6 +634,7 @@ def main(argv=None):
         print("Acceptance refused: use a new private workspace and a safe report path.", file=sys.stderr)
         return 1
     print("Acceptance " + ("passed" if result["passed"] else "failed") + "; inspect the sanitized report.")
+    print(json.dumps(result, sort_keys=True), flush=True)
     return 0 if result["passed"] else 1
 
 

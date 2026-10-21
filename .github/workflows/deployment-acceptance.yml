@@ -36,7 +36,14 @@ jobs:
         run: |
           options=()
           if [ "$INCLUDE_IMAGES" = true ]; then options+=(--include-images); fi
-          python -m deploy.acceptance --root "$RUNNER_TEMP/amdl-acceptance" --report "$RUNNER_TEMP/amdl-public/report.json" "${options[@]}"
+          sudo env "PATH=$PATH" "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" "$(command -v python)" -m deploy.acceptance --root "$RUNNER_TEMP/amdl-acceptance" --report "$RUNNER_TEMP/amdl-public/report.json" "${options[@]}"
+      - name: Make only the sanitized report readable to the artifact uploader
+        if: always()
+        run: |
+          if sudo test -f "$RUNNER_TEMP/amdl-public/report.json"; then
+            sudo chmod 0755 "$RUNNER_TEMP/amdl-public"
+            sudo chmod 0644 "$RUNNER_TEMP/amdl-public/report.json"
+          fi
       - name: Publish only the sanitized acceptance report
         if: always()
         uses: actions/upload-artifact@v4

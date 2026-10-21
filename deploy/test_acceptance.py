@@ -1,10 +1,14 @@
 """Pure local harness guards; the actual acceptance workflow uses real Docker."""
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
+import sys
 
 from deploy import acceptance
 
@@ -57,6 +61,63 @@ class AcceptanceGuardTests(unittest.TestCase):
             self.assertNotIn(value, clean)
         self.assertIn("public.example/file", clean)
         self.assertIn("ERROR", clean)
+
+    def test_only_real_credentials_and_proxy_urls_are_redacted(self):
+        values = {"YT_AUTH_RETRY_DELAY_SECONDS": "2", "YT_PO_TOKEN_ENABLED": "true",
+                  "ONLINE_AUTH_SUCCESS_COOLDOWN_SECONDS": "300", "YT_AUTH_AUTO_REFRESH_DISABLED": "false",
+                  "AUTH_BROWSER_IMAGE": "public-image:2026", "YT_COOKIES_PATH": "/state/cookies.txt",
+                  "WRAPPER_MANAGER_PROXY": "http://proxy-user:proxy-pass@proxy.example:8888",
+                  "SQ_DB_PASSWORD": "synthetic-db", "TELEGRAM_BOT_TOKEN": "synthetic-token"}
+        private = acceptance.credential_values(values)
+        self.assertEqual(set(private), {values["WRAPPER_MANAGER_PROXY"], "synthetic-db", "synthetic-token"})
+        clean = acceptance.redact_diagnostic("ERROR stage 2 sha256 2026 true false synthetic-db", private, self.base, acceptance.SOURCE)
+        self.assertIn("stage 2 sha256 2026 true false", clean)
+        self.assertNotIn("synthetic-db", clean)
+
+    def test_failed_stage_diagnostics_take_priority_over_successful_build_output(self):
+        harness = acceptance.Harness(self.base / "new", self.base / "report.json")
+        acceptance.atomic_json(harness.original / "state/install.json", {"failed_stage": "services"})
+        from deploy.installer import write_env
+        write_env(harness.original / "config/private.env", {"SQ_DB_PASSWORD": "synth-db", "YT_AUTH_RETRY_DELAY_SECONDS": "2"})
+        logs = harness.original / "state/logs"
+        logs.mkdir()
+        (logs / "start-core-services.log").write_text("dependency failed to start: wrapper unhealthy, stage 2 synth-db\nCookie: hidden-payload ERROR\n")
+        (logs / "sq-dependency-build.log").write_text("#9 DONE 0.1s\n" * 100 + "ERROR unrelated-successful-build\n")
+        (logs / "container-application.log").write_text("ERROR private-application-payload\n")
+        harness.safe_diagnostics()
+        diagnostics = "\n".join(harness.result["safe_build_diagnostics"])
+        self.assertIn("services:start-core-services", diagnostics)
+        self.assertIn("wrapper unhealthy, stage 2", diagnostics)
+        for value in ("synth-db", "hidden-payload", "unrelated-successful-build", "private-application-payload"):
+            self.assertNotIn(value, diagnostics)
+
+    def test_sq_initialization_failure_selects_its_own_log(self):
+        harness = acceptance.Harness(self.base / "new", self.base / "report.json")
+        acceptance.atomic_json(harness.restored / "state/install.json", {"failed_stage": "sq_configuration"})
+        logs = harness.restored / "state/logs"
+        logs.mkdir()
+        (logs / "sq-schema-configure.log").write_text("ERROR schema was not initialized\n")
+        harness.safe_diagnostics()
+        self.assertIn("sq_configuration:sq-schema-configure", harness.result["safe_build_diagnostics"][0])
+
+    def test_install_progress_never_prints_arbitrary_private_state(self):
+        harness = acceptance.Harness(self.base / "new", self.base / "report.json")
+        acceptance.atomic_json(harness.original / "state/install.json", {
+            "completed": acceptance.STAGES[:8], "failed_stage": "synthetic-secret-field", "private": "synthetic-secret-field"})
+        self.assertEqual(acceptance.installer_progress(harness.original), acceptance.STAGES[8])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            harness.command([sys.executable, "-c", "print('synthetic-private-command-output')"], "progress-fixture", progress_root=harness.original)
+        self.assertIn("Installer progress: original " + acceptance.STAGES[8], output.getvalue())
+        self.assertNotIn("synthetic", output.getvalue())
+
+    def test_cli_prints_only_sanitized_report_object_after_run(self):
+        report = {"passed": False, "stage": "fresh_install", "failure": "original_install_exit_1"}
+        output = io.StringIO()
+        with mock.patch.object(acceptance.Harness, "run", return_value=report), redirect_stdout(output):
+            result = acceptance.main(["--root", str(self.base / "new"), "--report", str(self.base / "report.json")])
+        self.assertEqual(result, 1)
+        self.assertEqual(json.loads(output.getvalue().splitlines()[-1]), report)
 
     def test_failure_category_never_serializes_arbitrary_exception_text(self):
         self.assertEqual(acceptance.safe_failure(RuntimeError("Cookie: synthetic-secret")), "unexpected_runtimeerror")

@@ -14,6 +14,7 @@ import re
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -562,6 +563,7 @@ class Installer:
     def stage_credentials(self):
         values = read_env(self.env_file)
         uid, gid = int(values["PUID"]), int(values["PGID"])
+        media_keys = {"MUSIC_PATH", "YOUTUBE_MUSIC_PATH", "YOUTUBE_VIDEO_PATH", "BILIBILI_MUSIC_PATH", "BILIBILI_VIDEO_PATH"}
         for key in self.managed_paths():
             value = values[key]
             if key not in {"LX_FRONTEND_AUTH_PATH", "SQ_AUTH_PATH"}:
@@ -570,8 +572,22 @@ class Installer:
                 Path(value).mkdir(parents=True, exist_ok=True, mode=0o700)
                 if key in {"YOUTUBE_BROWSER_PATH", "BILIBILI_BROWSER_PATH", "NAVIDROME_DATA_PATH", "EMBY_DATA_PATH", "LRCAPI_DATA_PATH"} or "MUSIC_PATH" in key or "VIDEO_PATH" in key:
                     if os.geteuid() == 0:
+                        restored_media = bool(self.state.get("restore")) and key in media_keys
+                        mode = stat.S_IMODE(Path(value).stat().st_mode) if restored_media else None
                         os.chown(value, uid, gid)
-                        if self.state.get("restore") and key in {"YOUTUBE_BROWSER_PATH", "BILIBILI_BROWSER_PATH", "NAVIDROME_DATA_PATH", "EMBY_DATA_PATH", "LRCAPI_DATA_PATH"}:
+                        if restored_media:
+                            # Only freshly restored copies below this root are
+                            # remapped. Keep restrictive modes, and change a
+                            # validated internal symlink itself, not its target.
+                            os.chmod(value, mode)
+                            for directory, directories, files in os.walk(value, followlinks=False):
+                                for name in directories + files:
+                                    child = Path(directory) / name
+                                    metadata = child.lstat()
+                                    os.lchown(str(child), uid, gid)
+                                    if not stat.S_ISLNK(metadata.st_mode):
+                                        os.chmod(str(child), stat.S_IMODE(metadata.st_mode), follow_symlinks=False)
+                        elif self.state.get("restore") and key in {"YOUTUBE_BROWSER_PATH", "BILIBILI_BROWSER_PATH", "NAVIDROME_DATA_PATH", "EMBY_DATA_PATH", "LRCAPI_DATA_PATH"}:
                             # These are freshly restored copies, never the
                             # old NAS originals. Chromium's 0600 SQLite files
                             # need the selected runtime UID as well as /config.
