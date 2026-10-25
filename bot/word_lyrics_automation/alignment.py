@@ -13,6 +13,15 @@ from .text import display_units, normalize_text
 from .ttml import render_word_ttml
 
 
+_WHISPER_LANGUAGES = frozenset((
+    "auto en zh de es ru ko fr ja pt tr pl ca nl ar sv it id hi fi vi he uk el ms "
+    "cs ro da hu ta no th ur hr bg lt la mi ml cy sk te fa lv bn sr az sl kn et "
+    "mk br eu is hy ne mn bs kk sq sw gl mr pa si km sn yo so af oc ka be tg "
+    "sd gu am yi lo uz fo ht ps tk nn mt sa lb my bo tl mg as tt haw ln ha ba "
+    "jw su yue"
+).split())
+
+
 @dataclass(frozen=True, slots=True)
 class ASRWord:
     text: str
@@ -70,16 +79,37 @@ def validate_reference_payload(payload: dict[str, Any], *, duration: float | Non
         return
     if not isinstance(raw_lines, list):
         raise RuntimeError("invalid alignment reference: reference_lines must be an array")
-    last_begin = -1.0
+    last_begins: dict[str | None, float] = {}
+    keys: set[str] = set()
     contents: list[str] = []
     for index, line in enumerate(raw_lines, 1):
         if not isinstance(line, dict):
             raise RuntimeError(f"invalid alignment reference: line {index} must be an object")
         contents.append(text(line.get("text"), f"line {index}"))
+        if "alignment_language" in line:
+            language = line["alignment_language"]
+            if not isinstance(language, str) or language not in _WHISPER_LANGUAGES:
+                raise RuntimeError(f"invalid alignment reference: line {index} alignment_language must be a whisper language code")
+        # TTML document order groups lead/backing phrases for display. Its
+        # starts need only advance within the same vocal agent; another
+        # agent may enter earlier while the preceding phrase is still sung.
+        agent = line.get("agent")
+        if agent is not None:
+            agent = text(agent, f"line {index} agent")
+            if not agent.strip():
+                raise RuntimeError(f"invalid alignment reference: line {index} agent is empty")
+        key = line.get("key")
+        if key is not None:
+            key = text(key, f"line {index} key")
+            if not key.strip() or key in keys:
+                raise RuntimeError(f"invalid alignment reference: line {index} key is empty or duplicated")
+            keys.add(key)
+        if line.get("metadata") is not None:
+            text(line["metadata"], f"line {index} metadata")
         begin = number(line.get("begin"), f"line {index} begin")
-        if begin < 0 or begin < last_begin or (limit > 0 and begin >= limit):
+        if begin < 0 or begin < last_begins.get(agent, -1.0) or (limit > 0 and begin >= limit):
             raise RuntimeError(f"reference windows are invalid: line {index} begin")
-        last_begin = begin
+        last_begins[agent] = begin
         if line.get("end") is not None:
             end = number(line["end"], f"line {index} end")
             if end <= begin or (limit > 0 and end > limit + 0.5):
@@ -161,7 +191,7 @@ def _reference_lines(payload: dict[str, Any], duration: float) -> list[dict[str,
                 end = float(end_value) if end_value is not None else 0.0
             except (TypeError, ValueError):
                 continue
-            lines.append({"text": str(raw["text"]), "begin": begin, "end": end})
+            lines.append({**raw, "text": str(raw["text"]), "begin": begin, "end": end})
     if not lines:
         text = str(payload.get("reference_text") or "").strip()
         if text:
@@ -175,13 +205,34 @@ def _reference_lines(payload: dict[str, Any], duration: float) -> list[dict[str,
             ]
     for index, line in enumerate(lines):
         if line["end"] <= line["begin"]:
-            line["end"] = (
-                lines[index + 1]["begin"]
-                if index + 1 < len(lines)
-                else duration
+            line["end"] = next(
+                (following["begin"] for following in lines[index + 1:]
+                 if following.get("agent") == line.get("agent")
+                 and following["begin"] > line["begin"]),
+                duration,
             )
         line["end"] = min(duration, max(line["begin"] + 0.02, line["end"]))
     return lines
+
+
+def _parallel_agent_pairs(lines: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    return [(earlier, current)
+            for current, line in enumerate(lines)
+            for earlier, other in enumerate(lines[:current])
+            if line.get("agent") != other.get("agent")
+            and max(line["begin"], other["begin"]) < min(line["end"], other["end"])]
+
+
+def _repeated_parallel_indices(lines: list[dict[str, Any]]) -> set[int]:
+    return {index for pair in _parallel_agent_pairs(lines)
+            if normalize_text(lines[pair[0]]["text"]) == normalize_text(lines[pair[1]]["text"])
+            for index in pair}
+
+
+def reference_crop_bounds(lines: list[dict[str, Any]], index: int, duration: float) -> tuple[float, float]:
+    """One crop policy shared by inference planning and stable row lookup."""
+    lead_in = .10 if index in _repeated_parallel_indices(lines) else 1.25
+    return max(0.0, lines[index]["begin"] - lead_in), min(duration, lines[index]["end"] + .75)
 
 
 def align_reference(
@@ -201,6 +252,12 @@ def align_reference(
         raise RuntimeError("reference or acoustic transcript is empty")
     if window_words is not None and len(window_words) != len(lines):
         raise RuntimeError("reference window transcript count mismatch")
+    parallel_pairs = _parallel_agent_pairs(lines)
+    if parallel_pairs and window_words is None:
+        # A single mixed transcript cannot independently verify simultaneous
+        # voices, especially when they sing the same words. Route these rows
+        # through the established independent crop inference and quality gates.
+        raise RuntimeError("acoustic/reference mismatch: overlapping vocal agents require independent line windows")
 
     # Match each authoritative line only against nearby acoustic words.  A
     # whole-song SequenceMatcher is ambiguous when a chorus repeats: correct
@@ -209,6 +266,7 @@ def align_reference(
     # unit timings still come from the acoustic transcript and interpolation
     # between acoustically matched anchors.
     timings_by_line: list[list[tuple[float, float] | None]] = []
+    matched_anchors_by_line: list[list[tuple[float, float]]] = []
     matched = 0
     weighted_similarity = 0.0
     line_coverages: list[float] = []
@@ -227,6 +285,7 @@ def align_reference(
         line_timings: list[tuple[float, float] | None] = [None] * len(
             line_reference
         )
+        matched_anchors: list[tuple[float, float]] = []
         if line_observed:
             matcher = difflib.SequenceMatcher(
                 None,
@@ -242,6 +301,7 @@ def align_reference(
                     line_timings[reference_index] = line_observed_timings[
                         observed_index
                     ]
+                    matched_anchors.append(line_observed_timings[observed_index])
                     line_matched += 1
             # A homophone/substitution still has an observed acoustic span.
             # Use that span for timing without counting it as a text match.
@@ -271,6 +331,7 @@ def align_reference(
         line_coverages.append(line_coverage)
         line_similarities.append(line_similarity)
         timings_by_line.append(line_timings)
+        matched_anchors_by_line.append(matched_anchors)
 
     coverage = matched / len(reference)
     similarity = weighted_similarity / len(reference)
@@ -287,6 +348,23 @@ def align_reference(
             f"unverified_line_fraction={unverified_line_fraction:.3f}"
         )
 
+    # Distinct overlapping voices repeating one phrase must be anchored in
+    # their own native entry, before any missing-character interpolation.
+    # Rehearing the earlier entry with a slightly different DTW clock is not
+    # independent evidence for the later echo.
+    repeated_anchor_fractions: dict[str, float] = {}
+    for index in _repeated_parallel_indices(lines):
+        line = lines[index]
+        anchors = matched_anchors_by_line[index]
+        acoustic_span = sum(end - begin for begin, end in anchors)
+        native_span = sum(max(0.0, min(end, line["end"]) - max(begin, line["begin"]))
+                          for begin, end in anchors)
+        fraction = native_span / acoustic_span if acoustic_span else 0.0
+        repeated_anchor_fractions[str(line.get("key") or index + 1)] = round(fraction, 6)
+        if fraction + 1e-9 < .50:
+            raise RuntimeError("acoustic/reference mismatch: repeated parallel entry "
+                               f"{line.get('key') or index + 1} native_anchor_fraction={fraction:.3f} below 0.500")
+
     output_lines: list[LyricLine] = []
     for line_index, (raw_line, line_times) in enumerate(zip(lines, timings_by_line, strict=True)):
         line_text = str(raw_line["text"])
@@ -296,15 +374,20 @@ def align_reference(
         known = [timing for timing in line_times if timing is not None]
         acoustic_begin = min((timing[0] for timing in known), default=line_begin)
         acoustic_end = max((timing[1] for timing in known), default=line_end)
-        # Native duet/backing lines can overlap. Keep the reference line order,
-        # and serialize every pair whose reference intervals do not overlap.
-        # Checking all earlier lines also handles a long line enclosing several
-        # short lines, without granting those short lines arbitrary overlap.
+        # Each voice owns an independent clock. Preserve document order and
+        # constrain only earlier phrases of this same voice. This retains the
+        # established nonoverlap guard for ordinary single-voice references
+        # without flattening a backing entry onto a later lead phrase.
+        earlier_same_agent = [
+            (earlier, output)
+            for earlier, output in zip(lines[:line_index], output_lines, strict=True)
+            if earlier.get("agent") == raw_line.get("agent")
+        ]
         order_floor = max(
-            [output_lines[-1].begin if output_lines else 0.0]
+            [earlier_same_agent[-1][1].begin if earlier_same_agent else 0.0]
             + [
                 output.end
-                for earlier, output in zip(lines[:line_index], output_lines, strict=True)
+                for earlier, output in earlier_same_agent
                 if float(earlier["end"]) <= line_begin
             ]
         )
@@ -376,10 +459,28 @@ def align_reference(
         if not tokens or char_offset != len(line_normalized):
             raise RuntimeError("alignment did not preserve every reference character")
         output_lines.append(
-            LyricLine(line_text, tokens[0].begin, tokens[-1].end, tuple(tokens))
+            LyricLine(line_text, tokens[0].begin, tokens[-1].end, tuple(tokens),
+                      key=raw_line.get("key"), agent=raw_line.get("agent"),
+                      metadata=raw_line.get("metadata"))
         )
     if not output_lines:
         raise RuntimeError("alignment produced no timed reference lines")
+    for first, second in parallel_pairs:
+        earlier, current = lines[first], lines[second]
+        if normalize_text(earlier["text"]) != normalize_text(current["text"]):
+            continue
+        # Distinct native entries of the same phrase cannot both be certified
+        # by a crop that repeatedly hears just one entry. Allow one DTW frame
+        # of quantization when identifying an indistinguishable observed clock.
+        if (abs(earlier["begin"] - current["begin"]) <= .020
+                and abs(earlier["end"] - current["end"]) <= .020):
+            continue
+        left, right = output_lines[first], output_lines[second]
+        if (len(left.tokens) == len(right.tokens)
+                and all(abs(a.begin - b.begin) <= .020 + 1e-9
+                        and abs(a.end - b.end) <= .020 + 1e-9
+                        for a, b in zip(left.tokens, right.tokens, strict=True))):
+            raise RuntimeError("acoustic/reference mismatch: distinct parallel entries share one acoustic clock")
     ttml = render_word_ttml(
         output_lines,
         duration=duration,
@@ -398,6 +499,7 @@ def align_reference(
         ),
         "minimum_line_text_similarity": round(min(line_similarities), 6),
         "unverified_line_fraction": round(unverified_line_fraction, 6),
+        "repeated_parallel_native_anchor_fractions": repeated_anchor_fractions,
         "cue_count": sum(len(line.tokens) for line in output_lines),
         "average_probability": round(
             statistics.fmean(word.probability for word in words), 6
@@ -486,7 +588,12 @@ def build_candidate(
             if len(window_words) != len(references):
                 raise RuntimeError('reference window transcript count mismatch')
             whole_words = extract_asr_words(result)
+            parallel_indices = {index for pair in _parallel_agent_pairs(references) for index in pair}
             for index, reference in enumerate(references):
+                # Whole-song rescue would undo the independent observation
+                # requirement and can lend the lead's words to a backing row.
+                if index in parallel_indices:
+                    continue
                 lead = split_nonlexical(reference['text'])[0]
                 if not lead:
                     continue

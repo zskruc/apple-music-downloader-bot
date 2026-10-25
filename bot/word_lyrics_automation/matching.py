@@ -69,6 +69,7 @@ def retime_exact_lines_to_references(
                 reference.begin,
                 reference.end,
                 tuple(tokens),
+                key=reference.key, agent=reference.agent, metadata=reference.metadata,
             )
         )
     return tuple(output)

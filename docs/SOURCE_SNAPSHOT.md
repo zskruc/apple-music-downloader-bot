@@ -214,3 +214,31 @@ v0.2.0 的真实隔离基础设施验收已通过上述固定运行：安装、V
 账号登录、真实下载、字幕质量与播放未测试；当前 NAS 的完整生产导出与迁移也
 没有完成。原有来源、历史测试数量和当时的验收限制保留不变，具体证据以新验收
 记录为准，恢复目录以生成的私有 env 与部署描述为准。
+
+## Parallel lyric timing supplement, 2026-10-26
+
+This supplement selectively adapts maintenance fixes prepared on
+2026-10-25–26, Asia/Shanghai. It preserves parallel TTML line identities and
+metadata, requires independent overlapping-window evidence, guards against
+borrowing an earlier echo, defines explicit language-hint precedence and
+keeps empty acoustic observations separate from successful checkpoints.
+Existing quality gates remain in force. See the bilingual
+[behavior and acceptance limits](LYRICS_PARALLEL_TIMING_20261026.md).
+
+The one-off dual-model/channel review used in an anonymized maintenance case
+is not an automated queue feature. Only generic source changes and synthetic
+regression cases are included; private evidence, full lyrics, media, models,
+credentials and production configuration are excluded.
+
+This public source tree passed **779 isolated tests** under Python 3.12,
+including 46 new cases for parallel vocal structure, agent-aware alignment,
+metadata filtering and zero-evidence recovery. `scripts/check_repo.py`
+reported no findings across 235 text source files. These checks are separate
+from the anonymized maintenance acceptance and do not establish general
+per-word timing accuracy. Earlier test totals retain their original scope.
+
+本轮按 2026-10-25–26 的维护修复选择性同步通用代码与合成测试，具体行为及
+验收边界见[多声部逐字歌词说明](LYRICS_PARALLEL_TIMING_20261026.md)。
+一次性双模型和声道人工复核没有自动集成。本轮公开仓库在 Python 3.12 下
+通过 **779 项隔离测试**（含 46 项新增用例），235 个文本源码文件的隐私检查
+无发现。这些检查与脱敏维护验收分别记录，不代表所有录音的逐字准确率。

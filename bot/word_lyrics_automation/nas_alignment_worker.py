@@ -115,6 +115,7 @@ class NasAlignmentWorker:
                 "alignment produced",
                 "alignment did not preserve",
                 "no timed acoustic tokens",
+                "reference or acoustic transcript is empty",
                 "trusted reference text is required",
             )
         )

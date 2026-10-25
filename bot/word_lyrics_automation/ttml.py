@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -23,6 +24,9 @@ class LineReference:
     text: str
     begin: float
     end: float
+    key: str | None = None
+    agent: str | None = None
+    metadata: str | None = None
 
 
 def local_name(tag: str) -> str:
@@ -66,18 +70,36 @@ def time_expression_is_offset(value: str | None) -> bool:
     return bool(raw) and ":" not in raw and raw.endswith(("h", "m", "s", "ms"))
 
 
+def _native_metadata(root: ET.Element) -> str | None:
+    element = root.find(f"{{{TT_NS}}}head/{{{TT_NS}}}metadata")
+    if element is None:
+        return None
+    # Tail whitespace belongs to <head>, not the metadata payload. Omitting
+    # it makes read/render/read identity checks stable for pretty native XML.
+    standalone = copy.deepcopy(element)
+    standalone.tail = None
+    return ET.tostring(standalone, encoding="unicode")
+
+
 def parse_line_references(ttml: str) -> list[LineReference]:
     root = ET.fromstring(ttml)
+    metadata = _native_metadata(root)
     references: list[LineReference] = []
-    for element in root.iter():
-        if local_name(str(element.tag)) != "p":
-            continue
-        begin = parse_time_expression(element.attrib.get("begin"))
-        end = parse_time_expression(element.attrib.get("end"))
-        text = "".join(element.itertext()).strip()
-        if not text or begin is None or end is None or end <= begin:
-            continue
-        references.append(LineReference(text=text, begin=begin, end=end))
+
+    def visit(element: ET.Element, inherited_agent: str | None = None) -> None:
+        agent = element.get(f"{{{TTM_NS}}}agent", inherited_agent)
+        if local_name(str(element.tag)) == "p":
+            begin = parse_time_expression(element.attrib.get("begin"))
+            end = parse_time_expression(element.attrib.get("end"))
+            text = "".join(element.itertext()).strip()
+            if text and begin is not None and end is not None and end > begin:
+                references.append(LineReference(text, begin, end,
+                    key=element.get(f"{{{ITUNES_NS}}}key"), agent=agent, metadata=metadata))
+            return
+        for child in element:
+            visit(child, agent)
+
+    visit(root)
     return references
 
 
@@ -101,16 +123,36 @@ def render_word_ttml(
         },
     )
     head = ET.SubElement(root, f"{{{TT_NS}}}head")
-    metadata = ET.SubElement(head, f"{{{TT_NS}}}metadata")
-    title_element = ET.SubElement(metadata, f"{{{TTM_NS}}}title")
-    title_element.text = title
-    agent = ET.SubElement(
-        metadata,
-        f"{{{TTM_NS}}}agent",
-        {"type": "person", f"{{{XML_NS}}}id": "v1"},
-    )
-    name = ET.SubElement(agent, f"{{{TTM_NS}}}name", {"type": "full"})
-    name.text = artist
+    native_metadata = {line.metadata for line in materialized if line.metadata is not None}
+    if len(native_metadata) > 1:
+        raise ValueError("lyric lines have inconsistent native metadata")
+    if native_metadata:
+        metadata = ET.fromstring(next(iter(native_metadata)))
+        if metadata.tag != f"{{{TT_NS}}}metadata":
+            raise ValueError("native lyric metadata is invalid")
+        head.append(metadata)
+    else:
+        metadata = ET.SubElement(head, f"{{{TT_NS}}}metadata")
+        title_element = ET.SubElement(metadata, f"{{{TTM_NS}}}title")
+        title_element.text = title
+    declared_agents = {element.get(f"{{{XML_NS}}}id")
+        for element in metadata.iter(f"{{{TTM_NS}}}agent")}
+    line_agents = [line.agent if native_metadata else line.agent or "v1" for line in materialized]
+    needed_agents = dict.fromkeys(agent_id for agent in line_agents
+        for agent_id in (agent or "").split())
+    for agent_id in needed_agents:
+        if agent_id in declared_agents:
+            continue
+        if native_metadata:
+            raise ValueError("lyric line references an undeclared native agent")
+        agent = ET.SubElement(metadata, f"{{{TTM_NS}}}agent",
+            {"type": "person" if agent_id == "v1" else "other", f"{{{XML_NS}}}id": agent_id})
+        if agent_id == "v1":
+            name = ET.SubElement(agent, f"{{{TTM_NS}}}name", {"type": "full"})
+            name.text = artist
+    keys = [line.key or f"L{index}" for index, line in enumerate(materialized, start=1)]
+    if len(keys) != len(set(keys)):
+        raise ValueError("lyric line keys are not unique")
     body = ET.SubElement(root, f"{{{TT_NS}}}body", {"dur": format_seconds(duration)})
     division = ET.SubElement(
         body,
@@ -130,10 +172,11 @@ def render_word_ttml(
             {
                 "begin": format_clock_time(line.begin),
                 "end": format_clock_time(line.end),
-                f"{{{ITUNES_NS}}}key": f"L{index}",
-                f"{{{TTM_NS}}}agent": "v1",
+                f"{{{ITUNES_NS}}}key": keys[index - 1],
             },
         )
+        if line_agents[index - 1] is not None:
+            paragraph.set(f"{{{TTM_NS}}}agent", line_agents[index - 1])
         for token in line.tokens:
             span = ET.SubElement(
                 paragraph,
@@ -164,8 +207,10 @@ def render_word_ttml(
 def parse_word_ttml(ttml: str) -> list[LyricLine]:
     root = ET.fromstring(ttml)
     lines: list[LyricLine] = []
+    metadata = _native_metadata(root)
 
-    def visit(element: ET.Element, parent_begin: float) -> None:
+    def visit(element: ET.Element, parent_begin: float, inherited_agent: str | None = None) -> None:
+        agent = element.get(f"{{{TTM_NS}}}agent", inherited_agent)
         begin_expression = element.attrib.get("begin")
         raw_begin = parse_time_expression(begin_expression)
         if raw_begin is None:
@@ -214,10 +259,11 @@ def parse_word_ttml(ttml: str) -> list[LyricLine]:
                     )
             text = "".join(element.itertext())
             if text:
-                lines.append(LyricLine(text, element_begin, line_end, tuple(tokens)))
+                lines.append(LyricLine(text, element_begin, line_end, tuple(tokens),
+                    key=element.get(f"{{{ITUNES_NS}}}key"), agent=agent, metadata=metadata))
             return
         for child in element:
-            visit(child, element_begin)
+            visit(child, element_begin, agent)
 
     visit(root, 0.0)
     return lines

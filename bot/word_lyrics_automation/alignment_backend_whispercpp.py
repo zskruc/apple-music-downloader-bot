@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .alignment_retry import build_with_reference_retry, reference_language
-from .alignment import validate_reference_payload
+from .alignment import (_parallel_agent_pairs, _reference_lines, reference_crop_bounds,
+                        validate_reference_payload)
 from .fingerprint import media_fingerprint, sha256_file
 from .io import atomic_write_json, atomic_write_text
 from .text import normalize_text
-from .whisper_dtw import convert_dtw_document
+from .whisper_dtw import NoTimedAcousticTokensError, convert_dtw_document
 
 
 ProgressCallback = Callable[[], None]
@@ -88,7 +89,10 @@ def _dtw_clock_diagnostics(result: dict[str, Any]) -> dict[str, Any]:
     return diagnostics
 
 
-def validate_dtw_result_clock(result: dict[str, Any], audio: Path) -> None:
+def validate_dtw_result_clock(
+    result: dict[str, Any], audio: Path, *,
+    empty_observation: NoTimedAcousticTokensError | None = None,
+) -> None:
     """Reject bad clocks before the matcher can clamp or discard words."""
     try:
         with wave.open(str(audio), "rb") as source:
@@ -98,6 +102,28 @@ def validate_dtw_result_clock(result: dict[str, Any], audio: Path) -> None:
     if rate <= 0 or frames <= 0:
         raise RuntimeError("cannot verify whisper DTW clock against empty audio crop")
     duration = frames / rate
+    if empty_observation is not None:
+        if (not isinstance(empty_observation, NoTimedAcousticTokensError)
+                or empty_observation.result is not result):
+            raise RuntimeError("whisper DTW empty observation is not a verified converter result")
+        diagnostics = _dtw_clock_diagnostics(result)
+        if diagnostics["timed_unit_count"] or diagnostics["timed_character_count"]:
+            raise RuntimeError("whisper DTW empty observation contains timed lexical units")
+        bounds = empty_observation.anchor_bounds
+        if bounds is not None:
+            try:
+                valid = (isinstance(bounds, tuple) and len(bounds) == 2
+                         and all(not isinstance(value, bool) and isinstance(value, (int, float))
+                                 and math.isfinite(value) for value in bounds)
+                         and 0 <= bounds[0] <= bounds[1])
+            except OverflowError:
+                valid = False
+            if not valid:
+                raise RuntimeError("whisper DTW empty observation has invalid anchor bounds")
+            if bounds[1] > duration + 0.020 + 1e-9:
+                raise RuntimeError("whisper DTW clock exceeds its actual audio crop")
+        elif diagnostics.get("raw_text_token_count"):
+            raise RuntimeError("whisper DTW empty observation is missing text-token anchor bounds")
     previous_end: float | None = None
     word_count = 0
     segments = result.get("segments")
@@ -127,7 +153,9 @@ def validate_dtw_result_clock(result: dict[str, Any], audio: Path) -> None:
                 raise RuntimeError("whisper DTW clock overlaps or reverses across word segments")
             previous_end = end
             word_count += 1
-    if not word_count:
+    if word_count and empty_observation is not None:
+        raise RuntimeError("whisper DTW empty observation contains timed acoustic words")
+    if not word_count and empty_observation is None:
         raise RuntimeError("whisper DTW clock returned no timed acoustic words")
 
 
@@ -321,12 +349,14 @@ def run_alignment(
     atomic_write_json(work_dir / "checkpoint-context.json", {"key": context_key, **context})
     completed_units: list[str] = []
     reused_units: list[str] = []
+    zero_evidence_units: list[str] = []
     clock_diagnostics_by_unit: dict[str, dict[str, Any]] = {}
 
     def unit_progress(stage: str, **extra: Any) -> None:
         atomic_write_json(work_dir / "progress.json", {
             "updated_at": time.time(), "stage": stage,
             "completed_units": completed_units, "reused_units": reused_units,
+            "zero_evidence_units": zero_evidence_units,
             "reference_lines": len(payload.get("reference_lines") or []),
             **extra,
         })
@@ -368,12 +398,27 @@ def run_alignment(
             # Legacy offsets can be uniformly spread over an entire segment.
             # Production must receive real DTW anchors and never silently fall
             # back to those offsets when DTW was disabled or malformed.
-            result = convert_dtw_document(document)
-            validate_dtw_result_clock(result, unit_audio)
+            empty_observation: NoTimedAcousticTokensError | None = None
+            try:
+                result = convert_dtw_document(document)
+            except NoTimedAcousticTokensError as exc:
+                # A valid observation can contain only one terminal anchor
+                # (or no lexical text). Keep its zero coverage and retry the
+                # other trusted windows; do not manufacture a terminal end.
+                result = exc.result
+                empty_observation = exc
+            validate_dtw_result_clock(result, unit_audio, empty_observation=empty_observation)
             clock_diagnostics_by_unit[unit] = _dtw_clock_diagnostics(result)
         except Exception as exc:
             unit_progress("interrupted", unit=unit, error=f"{type(exc).__name__}:{str(exc)[:1000]}")
             raise
+        if empty_observation is not None:
+            # This is diagnostic evidence, not a successful acoustic
+            # checkpoint. In particular it cannot bypass publication gates
+            # on a later run by masquerading as completed timing data.
+            zero_evidence_units.append(unit)
+            unit_progress("no_timed_evidence", unit=unit)
+            return result
         atomic_write_json(checkpoint, {"key": key, "result": result})
         completed_units.append(unit)
         unit_progress("checkpoint_saved", unit=unit)
@@ -453,19 +498,39 @@ def run_alignment(
     ]
     if reference_text:
         arguments.extend(["--prompt", reference_text[:1200]])
-    result = transcribe_cached(arguments, "whole-song", timeout_seconds)
+    # A mixed whole-song transcript cannot certify overlapping vocal agents.
+    # These references must use independent crops, so avoid an inference that
+    # the matcher would necessarily reject before doing those same crops.
+    independent_parallel_windows = bool(
+        duration > 0 and payload.get("reference_lines")
+        and _parallel_agent_pairs(_reference_lines(payload, duration)))
+    if independent_parallel_windows:
+        result = {"language": language, "segments": []}
+        unit_progress("independent_parallel_line_windows")
+    else:
+        result = transcribe_cached(arguments, "whole-song", timeout_seconds)
     retry_index = 0
+    reference_cursor = 0
+    retry_references = _reference_lines(payload, duration) if duration > 0 else []
 
     def transcribe_window(begin: float, end: float, text: str, language: str | None) -> dict[str, Any]:
-        nonlocal retry_index
-        retry_index += 1
+        nonlocal retry_index, reference_cursor
         # Skipped humming rows must not renumber existing checkpoints. Match
         # the original reference ordinal, preserving old audio/argv keys.
-        for index, reference in enumerate(payload.get('reference_lines') or [], 1):
+        # Match forward in the original document, rather than repeatedly
+        # picking its first equal text/start. Parallel voices can legitimately
+        # share both; each still needs its own stable ordinal checkpoint.
+        references = retry_references
+        for index in range(reference_cursor, len(references)):
+            reference = references[index]
             if (reference.get('text') == text
-                    and abs(max(0, float(reference['begin']) - 1.25) - begin) < 1e-6):
-                retry_index = index
+                    and abs(reference_crop_bounds(references, index, duration)[0] - begin) < 1e-6
+                    and abs(reference_crop_bounds(references, index, duration)[1] - end) < 1e-6):
+                retry_index = index + 1
+                reference_cursor = index + 1
                 break
+        else:
+            raise RuntimeError("retry crop does not match the next reference line")
         cropped = work_dir / f"line-{retry_index}.wav"
         prefix = work_dir / f"line-{retry_index}"
         with wave.open(str(wav), "rb") as source:
@@ -492,6 +557,7 @@ def run_alignment(
             "model": model.name,
             "language": result.get("language"),
             "alignment_language": language or "auto",
+            "whole_song_inference_skipped": independent_parallel_windows,
             "clock_method": _DTW_CLOCK_METHOD,
             "clock_group_end_derived": True,
             "reference_interpolation": "estimated_within_verified_native_windows",
@@ -523,6 +589,7 @@ def run_alignment(
             "checkpoint_key": context_key,
             "completed_acoustic_units": len(completed_units),
             "reused_acoustic_units": len(reused_units),
+            "zero_evidence_acoustic_units": zero_evidence_units,
         }
     )
     atomic_write_text(output, ttml)

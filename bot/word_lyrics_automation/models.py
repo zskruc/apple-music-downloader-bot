@@ -24,6 +24,10 @@ class LyricLine:
     begin: float
     end: float
     tokens: tuple[TimedToken, ...] = field(default_factory=tuple)
+    # Native line identity and voice survive every alignment/render round trip.
+    key: str | None = None
+    agent: str | None = None
+    metadata: str | None = None
 
     def __post_init__(self) -> None:
         if not self.text:

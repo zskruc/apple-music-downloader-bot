@@ -40,7 +40,8 @@ def restore_nonlexical(references: list[dict], lexical: list[LyricLine]) -> tupl
         lead, tail = split_nonlexical(text)
         begin, end = float(reference['begin']), float(reference['end'])
         if not lead:
-            output.append(LyricLine(text, begin, end))
+            output.append(LyricLine(text, begin, end, key=reference.get('key'),
+                agent=reference.get('agent'), metadata=reference.get('metadata')))
             humming += 1
             continue
         if cursor >= len(lexical):
@@ -57,7 +58,8 @@ def restore_nonlexical(references: list[dict], lexical: list[LyricLine]) -> tupl
             raise RuntimeError('lexical timing differs from native line envelope')
         tokens = tuple(TimedToken(token.text, begin + (token.begin - line.begin) * scale,
                                   begin + (token.end - line.begin) * scale) for token in line.tokens)
-        output.append(LyricLine(text, begin, end, tokens))
+        output.append(LyricLine(text, begin, end, tokens, key=reference.get('key'),
+            agent=reference.get('agent'), metadata=reference.get('metadata')))
         background += bool(tail)
     if cursor != len(lexical):
         raise RuntimeError('extra lexical reference lines')

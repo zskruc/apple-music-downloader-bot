@@ -16,6 +16,24 @@ from typing import Any
 _METHOD = "whisper_dtw_group_boundaries_v1"
 
 
+class NoTimedAcousticTokensError(RuntimeError):
+    """A valid DTW observation with no bounded lexical units.
+
+    Keep this distinct from malformed DTW data: a caller may retry a trusted
+    reference window, but cannot treat terminal anchors as measured durations.
+    """
+
+    def __init__(
+        self, result: dict[str, Any], anchor_bounds: tuple[float, float] | None,
+    ) -> None:
+        super().__init__("whisper.cpp DTW returned no timed acoustic tokens with known group ends")
+        self.result = result
+        # A terminal anchor still has to fit its real audio crop even though
+        # it cannot supply a bounded lexical unit. Keep this on the exception
+        # so successful result/checkpoint schemas remain unchanged.
+        self.anchor_bounds = anchor_bounds
+
+
 @dataclass
 class _Group:
     anchor: float
@@ -98,6 +116,8 @@ def convert_dtw_document(document: dict[str, Any]) -> dict[str, Any]:
         "untimed_character_count": 0,
     }
     segments: list[dict[str, Any]] = []
+    minimum_anchor: float | None = None
+    maximum_anchor: float | None = None
     for raw_segment in raw_segments:
         if not isinstance(raw_segment, dict):
             raise _error("contains a non-object segment")
@@ -122,6 +142,8 @@ def convert_dtw_document(document: dict[str, Any]) -> dict[str, Any]:
             if tick < 0:
                 raise _error("has negative text-token t_dtw; DTW is unavailable")
             anchor = tick / 100.0  # whisper.cpp uses 10 ms ticks, not ms.
+            minimum_anchor = anchor if minimum_anchor is None else min(minimum_anchor, anchor)
+            maximum_anchor = anchor if maximum_anchor is None else max(maximum_anchor, anchor)
             probability = _number(token.get("p", 0.0), "token probability")
             if not 0 <= probability <= 1:
                 raise _error("has out-of-range token probability")
@@ -196,8 +218,10 @@ def convert_dtw_document(document: dict[str, Any]) -> dict[str, Any]:
             "untimed_text": "".join(untimed),
         })
 
-    if not diagnostics["timed_unit_count"]:
-        raise _error("returned no timed acoustic tokens with known group ends")
     result = document.get("result")
     language = str(result.get("language") or "") if isinstance(result, dict) else ""
-    return {"language": language, "segments": segments, "clock_diagnostics": diagnostics}
+    converted = {"language": language, "segments": segments, "clock_diagnostics": diagnostics}
+    if not diagnostics["timed_unit_count"]:
+        bounds = (minimum_anchor, maximum_anchor) if minimum_anchor is not None else None
+        raise NoTimedAcousticTokensError(converted, bounds)
+    return converted

@@ -2,20 +2,13 @@ from __future__ import annotations
 
 import copy
 import math
+import unicodedata
 from typing import Any, Callable
 
-from .alignment import build_candidate, validate_reference_payload
+from .alignment import (_WHISPER_LANGUAGES, _reference_lines, build_candidate,
+                        reference_crop_bounds, validate_reference_payload)
 from .text import normalize_text
 from .nonlexical import split_nonlexical
-
-
-_WHISPER_LANGUAGES = frozenset((
-    "auto en zh de es ru ko fr ja pt tr pl ca nl ar sv it id hi fi vi he uk el ms "
-    "cs ro da hu ta no th ur hr bg lt la mi ml cy sk te fa lv bn sr az sl kn et "
-    "mk br eu is hy ne mn bs kk sq sw gl mr pa si km sn yo so af oc ka be tg "
-    "sd gu am yi lo uz fo ht ps tk nn mt sa lb my bo tl mg as tt haw ln ha ba "
-    "jw su yue"
-).split())
 
 
 def reference_language(payload: dict[str, Any]) -> str | None:
@@ -26,6 +19,50 @@ def reference_language(payload: dict[str, Any]) -> str | None:
         return language
     text = str(payload.get("reference_text") or "")
     return "ja" if any("\u3041" <= character <= "\u30ff" for character in text) else None
+
+
+def _script_family(character: str) -> str | None:
+    if not character.isalpha():
+        return None
+    if ("\u3400" <= character <= "\u9fff"
+            or "\u3041" <= character <= "\u30ff"):
+        return "cjk"
+    if unicodedata.name(character, "").startswith("LATIN"):
+        return "latin"
+    return "other"
+
+
+def reference_window_languages(payload: dict[str, Any], detected: str | None) -> list[str | None]:
+    """Keep legacy monolingual hints; never force a bilingual row to that hint.
+
+    Script identifies a change of language family, not the language of Latin
+    words. Such rows and mixed/unknown rows use Whisper's auto detection.
+    An explicit caller override remains authoritative for every crop.
+    """
+    rows = payload.get("reference_lines") or []
+    texts = [str(row.get("text") or "") for row in rows]
+    language = reference_language(payload) or detected
+    if "alignment_language" in payload:
+        return [language] * len(rows)
+    for index, row in enumerate(rows, 1):
+        if "alignment_language" in row:
+            hint = row["alignment_language"]
+            if not isinstance(hint, str) or hint not in _WHISPER_LANGUAGES:
+                raise RuntimeError(f"invalid alignment reference: line {index} alignment_language must be a whisper language code")
+    families = {_script_family(character) for text in texts for character in text} - {None}
+    if len(families) <= 1:
+        return [row.get("alignment_language", language) for row in rows]
+    languages: list[str | None] = []
+    for row, text in zip(rows, texts, strict=True):
+        if "alignment_language" in row:
+            languages.append(row["alignment_language"])
+            continue
+        row_families = {_script_family(character) for character in text} - {None}
+        if row_families == {"cjk"}:
+            languages.append("ja" if any("\u3041" <= character <= "\u30ff" for character in text) else "zh")
+        else:
+            languages.append("auto")
+    return languages
 
 
 def build_with_reference_retry(
@@ -44,46 +81,44 @@ def build_with_reference_retry(
             "reference or acoustic transcript is empty",
         )):
             raise
-    raw_lines = payload.get("reference_lines") or []
     duration = float((payload.get("track") or {}).get("duration") or 0)
+    raw_lines = payload.get("reference_lines") or []
     if not normalize_text(str(payload.get("reference_text") or "")) or not 1 <= len(raw_lines) <= 200:
         raise RuntimeError(initial_error)
     windows = []
-    last_begin = -1.0
-    for index, line in enumerate(raw_lines):
+    # Resolve missing endpoints within their vocal agent exactly as the
+    # aligner does, retaining document order for the returned observations.
+    references = _reference_lines(payload, duration)
+    for index, line in enumerate(references):
         try:
             begin = float(line["begin"])
-            # LRC timestamps specify starts only. Use the same envelope as
-            # the whole-song aligner instead of crashing on float(None).
-            end_value = line.get("end")
-            if end_value is None:
-                end_value = raw_lines[index + 1]["begin"] if index + 1 < len(raw_lines) else duration
-            end = float(end_value)
+            end = float(line["end"])
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(initial_error + "; reference windows are invalid") from exc
         text = str(line.get("text") or "")
         if (
             not all(math.isfinite(value) for value in (begin, end, duration))
-            or begin < 0 or begin < last_begin or end <= begin
+            or begin < 0 or end <= begin
             or end > duration + 0.5 or end - begin > 45
             or not normalize_text(text)
         ):
             raise RuntimeError(initial_error + "; reference windows are invalid")
-        windows.append((max(0, begin - 1.25), min(duration, end + 0.75), text))
-        last_begin = begin
+        windows.append((*reference_crop_bounds(references, index, duration), text))
     if sum(end - begin for begin, end, _ in windows) > duration * 2 + 60:
         raise RuntimeError(initial_error + "; reference windows exceed retry budget")
     language = reference_language(payload) or result.get("language")
+    window_languages = reference_window_languages(
+        {**payload, "reference_lines": references}, result.get("language"))
     merged: dict[str, Any] = {"language": language, "segments": []}
     reference_results: list[dict[str, Any]] = []
     retried = 0
-    for begin, end, text in windows:
+    for (begin, end, text), window_language in zip(windows, window_languages, strict=True):
         if not split_nonlexical(text)[0]:
-            reference_results.append({'language': language, 'segments': []})
+            reference_results.append({'language': window_language, 'segments': []})
             continue
-        window = transcribe_window(begin, end, text, language)
+        window = transcribe_window(begin, end, text, window_language)
         retried += 1
-        shifted: dict[str, Any] = {"language": language, "segments": []}
+        shifted: dict[str, Any] = {"language": window_language, "segments": []}
         for original in window.get("segments") or []:
             segment = copy.deepcopy(original)
             for key in ("start", "end"):
@@ -103,5 +138,6 @@ def build_with_reference_retry(
         initial_alignment_error=initial_error,
         retried_windows=retried,
         alignment_input_scope="per_reference_window",
+        reference_window_languages=window_languages,
     )
     return ttml, report

@@ -34,7 +34,7 @@ from .providers.netease import (NeteaseSong, fetch_yrc, fetch_lyric_record,
 from .providers.musiksammler import get_record as musiksammler_get_record
 from .providers.lrclib import get_record as lrclib_get_record
 from .providers.musicbrainz import get_isrc as musicbrainz_get_isrc
-from .text import is_credit_line, normalize_text
+from .text import is_lyric_metadata_line, normalize_text
 from .nonlexical import validate_text_coverage
 from .reference_fusion import fuse_reference_words
 from .ttml import parse_line_references, parse_word_ttml, render_word_ttml
@@ -45,6 +45,7 @@ _SOURCE_OBSERVATION_LIMIT = 128
 _SOURCE_FUSION_REASONS = {
     "native timed reference is required": "native_reference_missing",
     "native reference timing is invalid": "native_reference_timing_invalid",
+    "provider parallel voice identity is missing": "provider_parallel_voice_identity_missing",
     "insufficient independent reference anchors": "insufficient_reference_anchors",
     "source token timing is invalid": "source_token_timing_invalid",
     "provider has untimed lexical text": "untimed_lexical_text",
@@ -290,7 +291,9 @@ class LegacyGateway:
         raw = (record.get("lrc") or {}).get("lyric") or ""
         document = self.legacy.parse_lrc(raw)
         lines = [line for line in document.lines
-                 if not is_instrumental_marker(line.text) and not is_credit_line(line.text)]
+                 if not is_instrumental_marker(line.text)
+                 and not is_lyric_metadata_line(line.text, title=song.title, artist=song.artist,
+                                               begin=line.begin)]
         if (len(lines) < 4 or len(normalize_text("".join(line.text for line in lines))) < 40
                 or any(line.begin < 0 or line.begin > track.duration for line in lines)
                 or any(right.begin <= left.begin for left, right in zip(lines, lines[1:]))):
@@ -314,6 +317,40 @@ class LegacyGateway:
             self.state_dir / "automation" / "artist-identities", client
         ).resolve(track)
 
+    @staticmethod
+    def _reference_rows(path: Path, document: Any) -> list[dict[str, Any]]:
+        rows = [{"text": line.text, "begin": line.begin, "end": line.end}
+                for line in document.lines]
+        # The legacy reader exposes text/time only. Read native TTML directly
+        # so neither enqueue nor the final publication check erases voices.
+        # Keep its inferred/missing ends for old single-voice TTML references.
+        if path.suffix.casefold() != ".ttml":
+            return rows
+        try:
+            root = ET.fromstring(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, ValueError, ET.ParseError) as exc:
+            raise CandidateRejected("native_reference_structure_unreadable") from exc
+        from .ttml import ITUNES_NS, TTM_NS, _native_metadata, local_name
+        metadata_text = _native_metadata(root)
+        structured: list[dict[str, Any]] = []
+
+        def visit(element: ET.Element, inherited_agent: str | None = None) -> None:
+            agent = element.get(f"{{{TTM_NS}}}agent", inherited_agent)
+            if local_name(str(element.tag)) == "p":
+                text = "".join(element.itertext()).strip()
+                if normalize_text(text):
+                    structured.append({"text": text, "key": element.get(f"{{{ITUNES_NS}}}key"),
+                                       "agent": agent, "metadata": metadata_text})
+                return
+            for child in element:
+                visit(child, agent)
+
+        visit(root)
+        if (len(structured) != len(rows)
+                or [line["text"] for line in structured] != [line["text"] for line in rows]):
+            raise CandidateRejected("native_reference_structure_mismatch")
+        return [{**row, **structure} for row, structure in zip(rows, structured, strict=True)]
+
     def alignment_payload(self, track: Any, fingerprint_data: dict[str, Any]) -> dict[str, Any]:
         references = self.references(track.path)
         # Preserve the most complete text, then prefer explicit line ends.
@@ -329,10 +366,7 @@ class LegacyGateway:
             path, document = references[0]
             reference_path = str(path)
             reference_text = "".join(line.text for line in document.lines)
-            reference_lines = [
-                {"text": line.text, "begin": line.begin, "end": line.end}
-                for line in document.lines
-            ]
+            reference_lines = self._reference_rows(path, document)
         return {
             "track": {
                 "title": track.title,
@@ -461,6 +495,12 @@ class LegacyGateway:
             if exact_reference is None:
                 raise CandidateRejected("candidate_text_not_exactly_equal_to_reference")
             reference_path = str(exact_reference[0])
+            if exact_reference[0].suffix.casefold() == ".ttml":
+                current_rows = self._reference_rows(*exact_reference)
+                self._validate_alignment_reference(semantic_lines, {
+                    "reference_text": "".join(row["text"] for row in current_rows),
+                    "reference_lines": current_rows,
+                }, track.duration)
             metrics["reference_text_similarity"] = 1.0
         else:
             reference_path = ""
@@ -477,8 +517,7 @@ class LegacyGateway:
                     raise CandidateRejected("alignment_reference_missing_since_enqueue")
                 current_reference = {
                     "reference_text": "".join(line.text for line in current.lines),
-                    "reference_lines": [{"text": line.text, "begin": line.begin, "end": line.end}
-                                        for line in current.lines],
+                    "reference_lines": self._reference_rows(Path(original_path), current),
                 }
                 self._validate_alignment_reference(semantic_lines, current_reference, track.duration)
         if mac_report is not None:
@@ -522,19 +561,27 @@ class LegacyGateway:
         references = _reference_lines(payload, duration)
         if len(lines) != len(references) or not lines:
             raise CandidateRejected("alignment_reference_line_count_mismatch")
-        previous_begin = 0.0
-        completed: list[tuple[float, float]] = []
+        previous_begins: dict[str, float] = {}
+        completed: dict[str, list[tuple[float, float]]] = {}
         for line, reference in zip(lines, references, strict=True):
             if line.text != str(reference["text"]):
                 raise CandidateRejected("alignment_reference_line_text_mismatch")
+            if reference.get("key") is not None and getattr(line, "key", None) != reference["key"]:
+                raise CandidateRejected("alignment_reference_line_key_mismatch")
+            if reference.get("agent") is not None and getattr(line, "agent", None) != reference["agent"]:
+                raise CandidateRejected("alignment_reference_line_agent_mismatch")
+            if (reference.get("metadata") is not None
+                    and getattr(line, "metadata", None) != reference["metadata"]):
+                raise CandidateRejected("alignment_reference_metadata_mismatch")
             begin, end = reference["begin"], reference["end"]
             padding = max(1.25, min(2.5, (end - begin) * 0.4))
-            # Only reference-overlapping pairs may overlap in the result.
-            # Retain document start order and every non-overlap boundary,
-            # including earlier long lines nested around later short lines.
+            # Native voices are independent clocks. Within each voice retain
+            # both document start order and every non-overlap boundary.
+            voice = str(reference.get("agent") or "")
+            voice_completed = completed.setdefault(voice, [])
             order_floor = max(
-                [previous_begin]
-                + [output_end for reference_end, output_end in completed if reference_end <= begin]
+                [previous_begins.get(voice, 0.0)]
+                + [output_end for reference_end, output_end in voice_completed if reference_end <= begin]
             )
             if (
                 not all(math.isfinite(value) for value in (begin, end, line.begin, line.end))
@@ -544,8 +591,8 @@ class LegacyGateway:
                 or line.end > end + padding + 0.001
             ):
                 raise CandidateRejected("alignment_reference_time_window_mismatch")
-            previous_begin = line.begin
-            completed.append((end, line.end))
+            previous_begins[voice] = line.begin
+            voice_completed.append((end, line.end))
 
     def publish(
         self,

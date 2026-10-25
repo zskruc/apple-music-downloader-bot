@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 import urllib.parse
 import urllib.request
 import zlib
 from dataclasses import dataclass
 
 from ..models import LyricLine, TimedToken
-from ..text import is_credit_line, normalize_text
+from ..text import is_lyric_metadata_line, normalize_text
 
 
 _KRC_KEY = bytes(
@@ -143,9 +142,8 @@ def parse_krc(
     artist: str = "",
 ) -> list[LyricLine]:
     output: list[LyricLine] = []
-    title_artist = normalize_text(f"{title}{artist}")
     for raw_line in krc.splitlines():
-        raw_line = raw_line.strip()
+        raw_line = raw_line.lstrip()
         if not raw_line.startswith("[") or "]" not in raw_line:
             continue
         envelope, payload = raw_line[1:].split("]", 1)
@@ -182,16 +180,11 @@ def parse_krc(
         if pending_text and tokens:
             last = tokens[-1]
             tokens[-1] = TimedToken(last.text + pending_text, last.begin, last.end)
-        text = "".join(token.text for token in tokens).strip()
+        text = "".join(token.text for token in tokens)
         normalized = normalize_text(text)
-        if not text or not normalized or not tokens or is_credit_line(text):
+        if not normalized or not tokens:
             continue
-        if (
-            line_start_ms < 20_000
-            and title_artist
-            and normalize_text(re.sub(r"[（(][^()（）]*[）)]", "", text))
-            == normalize_text(re.sub(r"[（(][^()（）]*[）)]", "", f"{title}{artist}"))
-        ):
+        if is_lyric_metadata_line(text, title=title, artist=artist, begin=line_start_ms / 1000.0):
             continue
         line_begin = min(line_start_ms / 1000.0, tokens[0].begin)
         line_end = max(

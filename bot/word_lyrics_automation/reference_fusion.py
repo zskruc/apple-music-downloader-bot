@@ -15,6 +15,11 @@ def fuse_reference_words(references: list[dict], source: list[LyricLine], *,
                          duration: float, title: str, artist: str) -> tuple[str, dict]:
     if not references or not math.isfinite(duration) or duration <= 0:
         raise ValueError('native timed reference is required')
+    # Unlabelled third-party word clocks cannot establish which native
+    # voice a token belongs to. Keep the complete native text for acoustic
+    # alignment instead of flattening overlapping voices into one stream.
+    if len({str(line.get('agent') or '') for line in references}) > 1:
+        raise ValueError('provider parallel voice identity is missing')
     previous_end = 0.0
     for line in references:
         begin, end = float(line['begin']), float(line['end'])
@@ -93,7 +98,8 @@ def fuse_reference_words(references: list[dict], source: list[LyricLine], *,
             position += count
             tokens.append(TimedToken(unit, begin + (first - source_begin) * scale,
                                      begin + (last - source_begin) * scale))
-        output.append(LyricLine(reference['text'], begin, end, tuple(tokens)))
+        output.append(LyricLine(reference['text'], begin, end, tuple(tokens),
+            key=reference.get('key'), agent=reference.get('agent'), metadata=reference.get('metadata')))
     if statistics.median(start_deltas) > .5:
         raise ValueError('provider median word start differs from the native recording')
     restored, counts = restore_nonlexical(references, output)

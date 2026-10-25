@@ -1,0 +1,91 @@
+<?xml version='1.0' encoding='utf-8'?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xml:lang="und" itunes:timing="Line">
+  <head>
+    <metadata>
+      <ttm:title>Synthetic vocal timeline</ttm:title>
+      <ttm:agent xml:id="v1" type="person">
+        <ttm:name type="full">Fixture Lead</ttm:name>
+      </ttm:agent>
+      <ttm:agent xml:id="v2000" type="other">
+        <ttm:name type="full">Fixture Echo</ttm:name>
+      </ttm:agent>
+      <ttm:agent xml:id="v1000" type="group">
+        <ttm:name type="full">Fixture Choir</ttm:name>
+      </ttm:agent>
+    </metadata>
+  </head>
+  <body dur="240s">
+    <div>
+      <p begin="2.000s" end="4.400s" itunes:key="L1" ttm:agent="v2000">星港测风样本第01段</p>
+      <p begin="5.000s" end="7.400s" itunes:key="L2" ttm:agent="v2000">星港测风样本第02段</p>
+      <p begin="8.000s" end="10.400s" itunes:key="L3" ttm:agent="v2000">星港测风样本第03段</p>
+      <p begin="11.000s" end="13.400s" itunes:key="L4" ttm:agent="v2000">星港测风样本第04段</p>
+      <p begin="14.000s" end="16.400s" itunes:key="L5" ttm:agent="v2000">星港测风样本第05段</p>
+      <p begin="13.930s" end="17.700s" itunes:key="L6" ttm:agent="v1">Silver kites pass the quiet observatory</p>
+      <p begin="20.000s" end="22.400s" itunes:key="L7" ttm:agent="v2000">星港测风样本第07段</p>
+      <p begin="20.400s" end="23.000s" itunes:key="L8" ttm:agent="v1">A small lantern guides our paper rocket</p>
+      <p begin="26.000s" end="28.400s" itunes:key="L9" ttm:agent="v2000">星港测风样本第09段</p>
+      <p begin="26.000s" end="28.700s" itunes:key="L10" ttm:agent="v1">Blue gears hum beside the winter garden</p>
+      <p begin="32.000s" end="34.400s" itunes:key="L11" ttm:agent="v2000">星港测风样本第11段</p>
+      <p begin="31.700s" end="35.300s" itunes:key="L12" ttm:agent="v1">We sketch new islands with a copper pencil</p>
+      <p begin="38.000s" end="40.400s" itunes:key="L13" ttm:agent="v1">星港测风样本第13段</p>
+      <p begin="41.000s" end="43.400s" itunes:key="L14" ttm:agent="v1">星港测风样本第14段</p>
+      <p begin="44.000s" end="46.400s" itunes:key="L15" ttm:agent="v1">星港测风样本第15段</p>
+      <p begin="47.000s" end="49.400s" itunes:key="L16" ttm:agent="v1">星港测风样本第16段</p>
+      <p begin="50.000s" end="52.400s" itunes:key="L17" ttm:agent="v1">星港测风样本第17段</p>
+      <p begin="53.000s" end="55.400s" itunes:key="L18" ttm:agent="v1">星港测风样本第18段</p>
+      <p begin="56.000s" end="58.400s" itunes:key="L19" ttm:agent="v1">星港测风样本第19段</p>
+      <p begin="59.000s" end="61.400s" itunes:key="L20" ttm:agent="v1">星港测风样本第20段</p>
+      <p begin="62.000s" end="64.400s" itunes:key="L21" ttm:agent="v1">星港测风样本第21段</p>
+      <p begin="65.000s" end="67.400s" itunes:key="L22" ttm:agent="v1000">星港测风样本第22段</p>
+      <p begin="68.000s" end="70.400s" itunes:key="L23" ttm:agent="v1000">星港测风样本第23段</p>
+      <p begin="71.000s" end="73.400s" itunes:key="L24" ttm:agent="v1000">星港测风样本第24段</p>
+      <p begin="74.000s" end="76.400s" itunes:key="L25" ttm:agent="v1000">星港测风样本第25段</p>
+      <p begin="77.000s" end="79.400s" itunes:key="L26" ttm:agent="v1000">星港测风样本第26段</p>
+      <p begin="80.000s" end="82.400s" itunes:key="L27" ttm:agent="v1000">星港测风样本第27段</p>
+      <p begin="83.000s" end="85.400s" itunes:key="L28" ttm:agent="v1000">星港测风样本第28段</p>
+      <p begin="86.000s" end="88.400s" itunes:key="L29" ttm:agent="v1000">星港测风样本第29段</p>
+      <p begin="89.000s" end="91.400s" itunes:key="L30" ttm:agent="v1000">星港测风样本第30段</p>
+      <p begin="92.000s" end="94.400s" itunes:key="L31" ttm:agent="v1000">星港测风样本第31段</p>
+      <p begin="95.000s" end="97.400s" itunes:key="L32" ttm:agent="v1000">星港测风样本第32段</p>
+      <p begin="98.000s" end="100.400s" itunes:key="L33" ttm:agent="v1">The glass compass points toward morning</p>
+      <p begin="101.000s" end="103.400s" itunes:key="L34" ttm:agent="v1">Our folded maps remember every raindrop</p>
+      <p begin="104.000s" end="106.400s" itunes:key="L35" ttm:agent="v1">Tiny robots plant a row of moonflowers</p>
+      <p begin="112.011s" end="114.344s" itunes:key="L36" ttm:agent="v1">星舟穿雾来</p>
+      <p begin="113.712s" end="116.006s" itunes:key="L37" ttm:agent="v2000">星舟穿雾来</p>
+      <p begin="113.000s" end="115.400s" itunes:key="L38" ttm:agent="v1">星港测风样本第38段</p>
+      <p begin="116.000s" end="118.400s" itunes:key="L39" ttm:agent="v1">星港测风样本第39段</p>
+      <p begin="119.000s" end="121.400s" itunes:key="L40" ttm:agent="v1">星港测风样本第40段</p>
+      <p begin="122.000s" end="124.400s" itunes:key="L41" ttm:agent="v1000">星港测风样本第41段</p>
+      <p begin="125.000s" end="127.400s" itunes:key="L42" ttm:agent="v1000">星港测风样本第42段</p>
+      <p begin="128.000s" end="130.400s" itunes:key="L43" ttm:agent="v1000">星港测风样本第43段</p>
+      <p begin="131.000s" end="133.400s" itunes:key="L44" ttm:agent="v1000">星港测风样本第44段</p>
+      <p begin="134.000s" end="136.400s" itunes:key="L45" ttm:agent="v1000">星港测风样本第45段</p>
+      <p begin="137.000s" end="139.400s" itunes:key="L46" ttm:agent="v1000">星港测风样本第46段</p>
+      <p begin="140.000s" end="142.400s" itunes:key="L47" ttm:agent="v1000">星港测风样本第47段</p>
+      <p begin="143.000s" end="145.400s" itunes:key="L48" ttm:agent="v1000">星港测风样本第48段</p>
+      <p begin="146.000s" end="148.400s" itunes:key="L49" ttm:agent="v1000">星港测风样本第49段</p>
+      <p begin="149.000s" end="151.400s" itunes:key="L50" ttm:agent="v1000">星港测风样本第50段</p>
+      <p begin="152.000s" end="154.400s" itunes:key="L51" ttm:agent="v1000">星港测风样本第51段</p>
+      <p begin="155.000s" end="157.400s" itunes:key="L52" ttm:agent="v1000">星港测风样本第52段</p>
+      <p begin="155.000s" end="158.800s" itunes:key="L53" ttm:agent="v1">Orange balloons drift above the empty station</p>
+      <p begin="161.000s" end="163.400s" itunes:key="L54" ttm:agent="v1000">星港测风样本第54段</p>
+      <p begin="161.400s" end="164.500s" itunes:key="L55" ttm:agent="v1">A painted comet rests upon the windowsill</p>
+      <p begin="167.000s" end="169.400s" itunes:key="L56" ttm:agent="v1000">星港测风样本第56段</p>
+      <p begin="167.200s" end="170.700s" itunes:key="L57" ttm:agent="v1">We count the footsteps of a wooden dragon</p>
+      <p begin="173.000s" end="175.400s" itunes:key="L58" ttm:agent="v1000">星港测风样本第58段</p>
+      <p begin="173.000s" end="176.800s" itunes:key="L59" ttm:agent="v1">Bright pebbles mark the path across the meadow</p>
+      <p begin="179.000s" end="181.400s" itunes:key="L60" ttm:agent="v1000">星港测风样本第60段</p>
+      <p begin="179.000s" end="182.800s" itunes:key="L61" ttm:agent="v1">The clockwork sparrow carries a green ribbon</p>
+      <p begin="185.000s" end="187.400s" itunes:key="L62" ttm:agent="v1000">星港测风样本第62段</p>
+      <p begin="185.400s" end="188.500s" itunes:key="L63" ttm:agent="v1">Soft triangles glow inside the garden shed</p>
+      <p begin="191.000s" end="193.400s" itunes:key="L64" ttm:agent="v1000">星港测风样本第64段</p>
+      <p begin="191.000s" end="194.600s" itunes:key="L65" ttm:agent="v1">New constellations grow beneath the water tower</p>
+      <p begin="197.000s" end="199.400s" itunes:key="L66" ttm:agent="v1000">星港测风样本第66段</p>
+      <p begin="196.800s" end="200.600s" itunes:key="L67" ttm:agent="v1">Our silver notebooks wait beside the telescope</p>
+      <p begin="203.000s" end="205.400s" itunes:key="L68" ttm:agent="v1">A violet marble rolls into the quiet harbor</p>
+      <p begin="206.000s" end="208.400s" itunes:key="L69" ttm:agent="v1">星港测风样本第69段</p>
+      <p begin="209.000s" end="211.400s" itunes:key="L70" ttm:agent="v1">星港测风样本第70段</p>
+    </div>
+  </body>
+</tt>
