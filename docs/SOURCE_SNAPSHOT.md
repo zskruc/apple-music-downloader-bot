@@ -255,3 +255,18 @@ not establish a completed multi-week unattended observation period.
 
 本次仅公开通用实现与配置说明；[运行和验收指南](UNATTENDED_LYRICS.md)区分
 进程存活、业务健康、人工介入和持续观察，不将单次部署视为长期运行已验收。
+
+## Telegram response latency supplement, 2026-10-31
+
+This update moves message and cover retries into one API-layer budget, caps
+cover attempts and socket timeouts, preserves text-result fallback, and
+records search and send durations. Permanent errors stop immediately; rate
+limits preserve the server's requested wait without blocking beyond the
+configured retry policy. Synthetic regression tests exercise timeouts,
+temporary recovery, rate limits, permanent failures and polling isolation.
+See the bilingual operations guides for routing and timeout semantics.
+Deployment-specific proxies, private paths and production logs are excluded.
+
+本次同步 Telegram 单层有限重试、封面失败回退文字、分阶段耗时日志与合成
+回归测试。代理出口仍由部署者自行验证和配置；音乐业务路由保持独立。
+具体排障与超时语义见中英文运维指南，私有节点、路径和运行日志不随源码发布。

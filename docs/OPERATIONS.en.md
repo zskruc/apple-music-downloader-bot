@@ -96,6 +96,10 @@ The upgrade helper switches the selected service's image. Database migrations, c
 
 ## 7. Troubleshooting
 
+For slow Telegram replies, compare the update's `delivery_lag`, the `elapsed` value in `music search completed` / Apple search logs, and the `telegram sendPhoto` / `sendMessage` duration. A completed search followed by a long wait can indicate Telegram transport failures or rate limiting. Verify read-only `getMe` through the running bot's actual proxy; keep a single `getUpdates` poller. An unset `TELEGRAM_POLL_PROXY_URL` inherits `TELEGRAM_PROXY_URL`; an explicitly empty value disables the HTTP proxy for polling. Configure music search/download routing separately, and verify actual `DIRECT` matches for music domains behind a transparent proxy.
+
+The API layer owns the complete retry budget; `TELEGRAM_API_ATTEMPTS` and `TELEGRAM_SEND_ATTEMPTS` both default to 2. Covers use at most two attempts with an 8-second socket timeout each, then fall back to the same text results and buttons. This is not a strict end-to-end deadline. Permanent HTTP 400/403 errors stop immediately. HTTP 429 respects the server's `retry_after`; a delay above the cover's 2-second or other requests' 30-second wait budget ends the current retry without sending another request early. Subsequent sends and text fallback in the same chat share this cooldown; a rate limit without a chat identifier applies across the bot.
+
 | Symptom | Checks |
 |---|---|
 | Telegram `409 Conflict` | Find other pollers using the token; keep one instance. Repeated restarts do not fix two pollers. |

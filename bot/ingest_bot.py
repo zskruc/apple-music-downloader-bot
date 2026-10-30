@@ -219,7 +219,7 @@ TELEGRAM_POLL_ERROR_DELAY_SECONDS = max(
     0.5,
     float(env("TELEGRAM_POLL_ERROR_DELAY_SECONDS", "1") or "1"),
 )
-TELEGRAM_SEND_ATTEMPTS = max(1, int(env("TELEGRAM_SEND_ATTEMPTS", "5") or "5"))
+TELEGRAM_SEND_ATTEMPTS = max(1, int(env("TELEGRAM_SEND_ATTEMPTS", "2") or "2"))
 TELEGRAM_SEND_RETRY_DELAY_SECONDS = float(
     env("TELEGRAM_SEND_RETRY_DELAY_SECONDS", "3") or "3"
 )
@@ -658,6 +658,11 @@ SYN_CHAT_REPLY_OPENER = build_opener(SYN_CHAT_REPLY_PROXY_URL)
 SEARCH_OPENER = build_opener(SEARCH_PROXY_URL)
 DIRECT_OPENER = build_opener("")
 
+# Share server-requested flood waits across methods without blocking other chats.
+telegram_rate_limit_lock = threading.Lock()
+telegram_rate_limit_until: dict[str, float] = {}
+telegram_rate_limit_keys: deque[str] = deque()
+
 
 def retryable_network_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
@@ -680,6 +685,9 @@ def read_response_text(response: Any) -> str:
 
 
 def telegram_http_error_description(exc: urllib.error.HTTPError) -> str:
+    cached = getattr(exc, "_telegram_description", None)
+    if cached is not None:
+        return cached
     try:
         body = read_response_text(exc)
     except Exception:
@@ -687,9 +695,53 @@ def telegram_http_error_description(exc: urllib.error.HTTPError) -> str:
     try:
         result = json.loads(body)
     except json.JSONDecodeError:
-        return body[:500] or str(exc)
-    description = result.get("description") if isinstance(result, dict) else None
-    return str(description or body[:500] or exc)
+        result = {}
+    if not isinstance(result, dict):
+        result = {}
+    exc._telegram_error_payload = result
+    description = str(result.get("description") or body[:500] or exc)
+    exc._telegram_description = description
+    return description
+
+
+def telegram_rate_limit_delay(exc: urllib.error.HTTPError) -> float | None:
+    # Read the error body only once, retaining its description for the final log.
+    telegram_http_error_description(exc)
+    parameters = getattr(exc, "_telegram_error_payload", {}).get("parameters")
+    value = parameters.get("retry_after") if isinstance(parameters, dict) else None
+    if value is None and exc.headers is not None:
+        value = exc.headers.get("Retry-After")
+    try:
+        delay = float(value)
+    except (TypeError, ValueError):
+        return None
+    # Invalid/negative/infinite delays cannot control the receive thread.
+    return delay if 0 <= delay < float("inf") else None
+
+
+
+def telegram_rate_limit_cooldown(scope: str, retry_after: float | None = None) -> float:
+    with telegram_rate_limit_lock:
+        now = time.monotonic()
+        # Rotate a bounded number of keys so expired entries behind active
+        # chats are eventually removed without scanning an unbounded mapping.
+        for _ in range(min(32, len(telegram_rate_limit_keys))):
+            key = telegram_rate_limit_keys.popleft()
+            if telegram_rate_limit_until.get(key, 0) <= now:
+                telegram_rate_limit_until.pop(key, None)
+            else:
+                telegram_rate_limit_keys.append(key)
+        if retry_after is not None and retry_after > 0:
+            if scope not in telegram_rate_limit_until:
+                telegram_rate_limit_keys.append(scope)
+            telegram_rate_limit_until[scope] = max(
+                telegram_rate_limit_until.get(scope, 0), now + retry_after,
+            )
+        return max(
+            0.0,
+            telegram_rate_limit_until.get("bot", 0) - now,
+            telegram_rate_limit_until.get(scope, 0) - now,
+        )
 
 
 def telegram_api(method: str, payload: dict[str, Any] | None = None, timeout: int = 70) -> Any:
@@ -706,9 +758,35 @@ def telegram_api(method: str, payload: dict[str, Any] | None = None, timeout: in
     # getUpdates is a continuous receive loop. Retrying it here would stack
     # per-attempt backoffs and make new messages appear late when a proxy drops
     # one request. The outer poll loop performs its own fast retry instead.
-    max_attempts = 1 if method == "getUpdates" else TELEGRAM_API_ATTEMPTS
+    if method == "getUpdates":
+        max_attempts = 1
+    elif method == "sendPhoto":
+        # Covers are optional: keep the complete retry budget here so a bad
+        # transport cannot delay the text fallback through nested retry loops.
+        max_attempts = min(2, TELEGRAM_SEND_ATTEMPTS)
+        timeout = min(timeout, 8)
+    elif method == "sendMessage":
+        max_attempts = TELEGRAM_SEND_ATTEMPTS
+    else:
+        max_attempts = TELEGRAM_API_ATTEMPTS
     opener = TELEGRAM_POLL_OPENER if method == "getUpdates" else TELEGRAM_OPENER
+    chat_id = payload.get("chat_id") if payload else None
+    scope = "bot" if chat_id is None or str(chat_id) == "" else "chat:" + str(chat_id)
+    rate_limit_wait_budget = 2.0 if method == "sendPhoto" else 30.0
     for attempt in range(1, max_attempts + 1):
+        # Recheck after sleeping: another thread may extend this chat's wait.
+        # Requests already in flight when a 429 arrives cannot be recalled.
+        while True:
+            cooldown = telegram_rate_limit_cooldown(scope)
+            if cooldown <= 0:
+                break
+            if cooldown > rate_limit_wait_budget:
+                raise RuntimeError(
+                    f"Telegram API {method} rate limited; retry_after={cooldown:g}s "
+                    "exceeds retry wait budget; stopping"
+                )
+            time.sleep(cooldown)
+            rate_limit_wait_budget -= cooldown
         try:
             with opener.open(request, timeout=timeout) as response:
                 body = read_response_text(response)
@@ -718,14 +796,34 @@ def telegram_api(method: str, payload: dict[str, Any] | None = None, timeout: in
             return result.get("result")
         except Exception as exc:
             last_error = exc
+            retry_after = None
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+                retry_after = telegram_rate_limit_delay(exc)
+                if retry_after is not None:
+                    # Record even the final failed attempt, so a following
+                    # text fallback or another method cannot bypass the wait.
+                    retry_after = telegram_rate_limit_cooldown(scope, retry_after)
             if attempt >= max_attempts or not retryable_network_error(exc):
                 break
-            if method != "getUpdates" or attempt > 1:
+            if retry_after is not None:
+                if retry_after > rate_limit_wait_budget:
+                    log(
+                        f"telegram api {method} rate limited; retry_after="
+                        f"{retry_after:g}s exceeds retry wait budget; stopping"
+                    )
+                    break
                 log(
-                    f"telegram api {method} network error on attempt "
-                    f"{attempt}/{max_attempts}: {exc}; retrying"
+                    f"telegram api {method} rate limited on attempt "
+                    f"{attempt}/{max_attempts}; retrying after {retry_after:g}s"
                 )
-            time.sleep(min(10.0, 1.5 * attempt))
+                # The next attempt checks the shared cooldown and owns its wait.
+                continue
+            retry_delay = min(10.0, 1.5 * attempt)
+            log(
+                f"telegram api {method} transient error on attempt "
+                f"{attempt}/{max_attempts}: {exc}; retrying in {retry_delay:g}s"
+            )
+            time.sleep(retry_delay)
     assert last_error is not None
     if isinstance(last_error, urllib.error.HTTPError):
         description = telegram_http_error_description(last_error)
@@ -750,26 +848,16 @@ def send_message(
         payload["reply_markup"] = reply_markup
     if parse_mode_name:
         payload["parse_mode"] = parse_mode_name
-    last_error: Exception | None = None
-    for attempt in range(1, TELEGRAM_SEND_ATTEMPTS + 1):
-        try:
-            result = telegram_api("sendMessage", payload, timeout=30)
-            return result if isinstance(result, dict) else None
-        except Exception as exc:
-            last_error = exc
-            if attempt >= TELEGRAM_SEND_ATTEMPTS:
-                break
-            log(
-                "failed to send Telegram message on attempt "
-                f"{attempt}/{TELEGRAM_SEND_ATTEMPTS}: {exc}; retrying"
-            )
-            time.sleep(TELEGRAM_SEND_RETRY_DELAY_SECONDS * attempt)
-    log(
-        "failed to send Telegram message after "
-        f"{TELEGRAM_SEND_ATTEMPTS} attempt(s): {last_error}"
-    )
-    return None
-
+    started = time.monotonic()
+    try:
+        result = telegram_api("sendMessage", payload, timeout=30)
+        log(f"telegram sendMessage completed elapsed={time.monotonic() - started:.3f}s")
+        return result if isinstance(result, dict) else None
+    except Exception as exc:
+        log(
+            f"failed to send Telegram message elapsed={time.monotonic() - started:.3f}s: {exc}"
+        )
+        return None
 
 
 def sync_word_lyrics_for_paths(paths, *, source_url="", logger=None, notification_context=None):
@@ -1110,25 +1198,16 @@ def send_photo(
         payload["reply_markup"] = reply_markup
     if parse_mode_name:
         payload["parse_mode"] = parse_mode_name
-    last_error: Exception | None = None
-    for attempt in range(1, TELEGRAM_SEND_ATTEMPTS + 1):
-        try:
-            telegram_api("sendPhoto", payload, timeout=30)
-            return True
-        except Exception as exc:
-            last_error = exc
-            if attempt >= TELEGRAM_SEND_ATTEMPTS:
-                break
-            log(
-                "failed to send Telegram photo on attempt "
-                f"{attempt}/{TELEGRAM_SEND_ATTEMPTS}: {exc}; retrying"
-            )
-            time.sleep(TELEGRAM_SEND_RETRY_DELAY_SECONDS * attempt)
-    log(
-        "failed to send Telegram photo after "
-        f"{TELEGRAM_SEND_ATTEMPTS} attempt(s): {last_error}"
-    )
-    return False
+    started = time.monotonic()
+    try:
+        telegram_api("sendPhoto", payload, timeout=8)
+        log(f"telegram sendPhoto completed elapsed={time.monotonic() - started:.3f}s")
+        return True
+    except Exception as exc:
+        log(
+            f"failed to send Telegram photo elapsed={time.monotonic() - started:.3f}s: {exc}"
+        )
+        return False
 
 
 def edit_message_caption(
@@ -1917,6 +1996,7 @@ def apple_music_search_token() -> str:
 
 
 def apple_music_search(query: str) -> list[SearchResult]:
+    started = time.monotonic()
     # iTunes Store search returns zero songs for CN even when the Apple Music
     # subscription catalog has matches. Search the catalog in the chosen region.
     language = {
@@ -2015,7 +2095,8 @@ def apple_music_search(query: str) -> list[SearchResult]:
         )
     if catalog_items and not results:
         raise ValueError("Apple Music 返回的歌曲数据无法解析，请稍后重试")
-    log(f"Apple Music catalog search country={SEARCH_COUNTRY} query={query!r} results={len(results)}")
+    log(f"Apple Music catalog search country={SEARCH_COUNTRY} query={query!r} "
+        f"results={len(results)} elapsed={time.monotonic() - started:.3f}s")
     return results
 
 
@@ -2547,6 +2628,7 @@ def unified_lx_search(query: str) -> list[LxSearchItem]:
 
 
 def unified_music_search(query: str) -> tuple[list[SearchResult], dict[str, str]]:
+    started = time.monotonic()
     searches = {"apple": lambda: apple_music_search(query)}
     if LX_FALLBACK_ENABLED:
         searches["lx"] = lambda: unified_lx_search(query)
@@ -2569,6 +2651,11 @@ def unified_music_search(query: str) -> tuple[list[SearchResult], dict[str, str]
         ))
     if errors:
         log("unified music search partial sources=" + ",".join(sorted(errors)))
+    source_counts = ",".join(f"{name}:{len(items)}" for name, items in sorted(found.items()))
+    log(
+        f"music search completed elapsed={time.monotonic() - started:.3f}s "
+        f"results={len(results)} sources={source_counts} failed={','.join(sorted(errors)) or 'none'}"
+    )
     return results, errors
 
 
@@ -3961,11 +4048,17 @@ def send_search_results(
     results: list[SearchResult],
     actor_id: str = "",
 ) -> None:
+    started = time.monotonic()
     session_key = cache_search_session(chat_id, message_id, query, mode, results, actor_id)
     text, reply_markup, artwork_url = build_search_results_page(query, mode, results, 0, session_key)
     if artwork_url and send_photo(chat_id, artwork_url, text, reply_markup, "HTML"):
+        log(f"search reply completed format=photo elapsed={time.monotonic() - started:.3f}s")
         return
-    send_message(chat_id, text, reply_markup, "HTML")
+    sent = send_message(chat_id, text, reply_markup, "HTML")
+    log(
+        f"search reply completed format=text delivered={bool(sent)} "
+        f"elapsed={time.monotonic() - started:.3f}s"
+    )
 
 
 def send_auto_lx_search_results(

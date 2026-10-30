@@ -96,6 +96,10 @@ bash ops/stack.sh rollback /absolute/private-upgrade-backup
 
 ## 7. 常见故障
 
+Telegram 回复变慢时，分别核对消息的 `delivery_lag`、`music search completed` / Apple 搜索的 `elapsed`，以及 `telegram sendPhoto` / `sendMessage` 的发送耗时。搜索已完成后仍在等待，可能是 Telegram 出口断线或限流。使用当前 bot 容器的实际代理验证只读 `getMe`，不要启动第二个 `getUpdates` 轮询器。`TELEGRAM_POLL_PROXY_URL` 未设置时继承 `TELEGRAM_PROXY_URL`；显式空值则表示不使用 HTTP 代理。音乐搜索与下载代理继续单独配置，透明代理环境还须确认音乐域名实际命中 `DIRECT`。
+
+发送重试由 API 层统一处理，`TELEGRAM_API_ATTEMPTS` 与 `TELEGRAM_SEND_ATTEMPTS` 默认均为 2。封面最多尝试两次，每次 socket 超时为 8 秒，失败后用相同结果和按钮回退文字；该超时不是严格的端到端时间上限。HTTP 400/403 等永久错误不重试；429 按服务器的 `retry_after` 等待，超过封面 2 秒或其他请求 30 秒的等待预算时停止本次重试，不提前再次请求。 同一聊天的后续发送与文字回退共用这段冷却；没有聊天标识的限流按 bot 范围处理。
+
 | 现象 | 检查与处理 |
 |---|---|
 | Telegram `409 Conflict` | 查同一 token 的其他轮询器，保留一套；反复重启不能解决双实例。 |
