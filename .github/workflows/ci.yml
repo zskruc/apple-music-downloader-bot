@@ -15,6 +15,12 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-test.txt
       - run: python -m pip install -r requirements-test.txt
+      - name: Install media validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version
+          ffprobe -version
       - run: python scripts/check_repo.py
       - run: python scripts/run_tests.py
       - name: Verify release archive and bootstrap
@@ -28,6 +34,8 @@ jobs:
           docker build --network=none -f - . <<'DOCKERFILE'
           FROM scratch
           COPY bot/yt_dlp_readonly_cookies.py /app/yt_dlp_readonly_cookies.py
+          COPY ops/lyrics_network_policy.py /app/lyrics_network_policy.py
+          COPY bot/lyrics_network_policy_runner.py /app/lyrics_network_policy_runner.py
           COPY services/youtube/install_sabr_tool.py /app/install_sabr_tool.py
           COPY services/youtube/SABR_SOURCES.md /notices/SOURCES.md
           COPY licenses/yt-dlp-sabr-Unlicense.txt /notices/LICENSE

@@ -80,6 +80,7 @@ python3 -m venv .venv
 - [LX 后端部署](services/lx-music/README.md) · [SQ 后端部署与任务补丁](services/sq-music/README.md)
 - [YouTube Music、视频、字幕与 Cookie](docs/YOUTUBE.zh-CN.md) · [English guide](docs/YOUTUBE.en.md)
 - [多声部逐字歌词：修复范围与验收限制](docs/LYRICS_PARALLEL_TIMING_20261026.md)
+- [逐词歌词：无人值守配置、恢复与验收](docs/UNATTENDED_LYRICS.md) · [未配置健康模板](docs/lyrics-service-health.example.json)
 - [部署与恢复验收记录](docs/DEPLOYMENT_ACCEPTANCE_20261021.md)
 - [源码与验证范围](docs/SOURCE_SNAPSHOT.md)
 - [敏感信息处理](SECURITY.md)

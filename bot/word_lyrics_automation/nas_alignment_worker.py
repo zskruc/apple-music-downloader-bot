@@ -192,6 +192,10 @@ class NasAlignmentWorker:
             media_path = Path(job.media_path)
             if media_fingerprint(media_path) != job.fingerprint_data:
                 raise RuntimeError("audio_changed_since_enqueue")
+            if env("WORD_LYRICS_MEDIA_INTEGRITY_ENABLED", "true").lower() not in {"false","0","no"}:
+                from .media_integrity import validate_media
+                validate_media(media_path, job.fingerprint_data, self.automation_dir / "media-integrity",
+                    timeout_seconds=float(env("WORD_LYRICS_MEDIA_CHECK_TIMEOUT_SECONDS", "120")))
             duration = float((job.payload.get("track") or {}).get("duration") or 0)
             timeout_seconds = acoustic_timeout(duration)
             # Persist completed inference units across worker restarts and
@@ -309,6 +313,17 @@ class NasAlignmentWorker:
         except Exception as exc:
             if destination is not None:
                 destination.unlink(missing_ok=True)
+            if type(exc).__name__ == "MediaIntegrityError":
+                from .faults import classify_exception
+                fault=classify_exception(exc,stage="alignment")
+                if not fault.retryable:
+                    self.store.hold_for_attention(job.id,job.lease_token,stage="alignment",
+                        fault=fault.as_dict(),diagnostic_payload=diagnostic_payload)
+                else:
+                    self.store.fail(job.id,job.lease_token,stage="alignment",error=fault.code,
+                        retryable=True,diagnostic_payload=diagnostic_payload)
+                self.health(stage="media_integrity_blocked",job_id=job.id,error=fault.code)
+                return
             safe_error = f"{type(exc).__name__}:{str(exc)[:1200]}"
             if self.deterministic_failure(safe_error):
                 try:

@@ -242,3 +242,16 @@ per-word timing accuracy. Earlier test totals retain their original scope.
 一次性双模型和声道人工复核没有自动集成。本轮公开仓库在 Python 3.12 下
 通过 **779 项隔离测试**（含 46 项新增用例），235 个文本源码文件的隐私检查
 无发现。这些检查与脱敏维护验收分别记录，不代表所有录音的逐字准确率。
+
+## Unattended lyric service supplement, 2026-10-31
+
+See the [bilingual runbook](UNATTENDED_LYRICS.md) and
+[unconfigured health template](lyrics-service-health.example.json) for generic
+fault classification, bounded recovery, media checks, actual player read-back,
+scoped worker recovery and post-rollout observation. No private recordings,
+account data, production bindings or audit reports are included. Earlier test
+counts and acceptance limits retain their historical scope; publication does
+not establish a completed multi-week unattended observation period.
+
+本次仅公开通用实现与配置说明；[运行和验收指南](UNATTENDED_LYRICS.md)区分
+进程存活、业务健康、人工介入和持续观察，不将单次部署视为长期运行已验收。

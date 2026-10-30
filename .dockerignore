@@ -3,6 +3,9 @@
 !requirements.txt
 !bot/
 !bot/**
+!ops/
+ops/**
+!ops/lyrics_network_policy.py
 !vm/
 !vm/**
 !licenses/

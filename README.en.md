@@ -64,6 +64,7 @@ These steps install test dependencies; service dependencies are in `requirements
 - [LX backend deployment](services/lx-music/README.md) · [SQ backend and task patch](services/sq-music/README.md)
 - [YouTube Music, video, subtitles and cookies](docs/YOUTUBE.en.md) · [中文指南](docs/YOUTUBE.zh-CN.md)
 - [Parallel lyric timing: behavior and validation limits](docs/LYRICS_PARALLEL_TIMING_20261026.md#english)
+- [Unattended lyrics: configuration, recovery and acceptance](docs/UNATTENDED_LYRICS.md#english) · [Unconfigured health template](docs/lyrics-service-health.example.json)
 - [Deployment and restore acceptance record](docs/DEPLOYMENT_ACCEPTANCE_20261021.md)
 - [Source snapshot and verification scope](docs/SOURCE_SNAPSHOT.md)
 - [Sensitive information handling](SECURITY.md)

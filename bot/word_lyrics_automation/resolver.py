@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .fingerprint import media_fingerprint
+from .faults import LyricFault, classify_exception, choose_fault
 from .io import atomic_write_json
 from .instrumental import (INSTRUMENTAL_DISPLAY, confirm_instrumental,
                            confirm_catalog_instrumental, exact_netease_record,
@@ -95,6 +96,7 @@ class Resolution:
     reason: str = ""
     retryable_error: str = ""
     not_required: dict[str, Any] | None = None
+    faults: tuple[dict[str, Any], ...] = ()
 
 
 class CandidateRejected(RuntimeError):
@@ -148,6 +150,28 @@ class LegacyGateway:
         self.service = object.__new__(legacy.WordLyricsService)
         self.service.state_dir = state_dir
         self.service.audit = legacy.AuditStore(state_dir)
+
+    def validate_media(self, media_path: Path, *, expected_fingerprint):
+        if os.environ.get("WORD_LYRICS_MEDIA_INTEGRITY_ENABLED", "true").lower() in {"0","false","no"}:
+            return {"checked": False, "reason": "explicitly_disabled"}
+        from .media_integrity import validate_media
+        return validate_media(media_path, expected_fingerprint,
+            self.state_dir / "automation" / "media-integrity",
+            timeout_seconds=float(os.environ.get("WORD_LYRICS_MEDIA_CHECK_TIMEOUT_SECONDS", "120")))
+
+    def request_player_scan(self):
+        if os.environ.get("WORD_LYRICS_PLAYER_VERIFY_ENABLED", "true").lower() in {"0","false","no"}:
+            from youtube_ingest import trigger_navidrome_scan
+            return trigger_navidrome_scan()
+        from .player_verification import request_from_environment
+        return request_from_environment()("startScan").get("status")=="ok"
+
+    def verify_player(self, job, result):
+        if os.environ.get("WORD_LYRICS_PLAYER_VERIFY_ENABLED", "true").lower() in {"0","false","no"}:
+            return {"checked": False, "reason": "explicitly_disabled"}
+        from .player_verification import verify_publication
+        return verify_publication(Path(job.media_path), job.metadata, result, job.fingerprint_data,
+            evidence_dir=self.state_dir / "automation" / "player-verification")
 
     def inspect(self, media_path: Path, metadata: dict[str, Any]) -> Any:
         seed = self.legacy.Track(
@@ -603,6 +627,7 @@ class LegacyGateway:
         mac_report: dict[str, Any] | None = None,
         alignment_payload: dict[str, Any] | None = None,
     ) -> Publication:
+        self.validate_media(track.path, expected_fingerprint=expected_fingerprint)
         current_fingerprint = media_fingerprint(track.path)
         if current_fingerprint != expected_fingerprint:
             raise CandidateRejected("audio_changed_since_enqueue")
@@ -711,6 +736,14 @@ class SourceResolutionEngine:
                 "counts": dict(self.source_diagnostic_counts),
                 "omitted_events": sum(self.source_diagnostic_counts.values()) - min(room, len(self.source_diagnostics))})
         return observations
+
+    @staticmethod
+    def _provider_failure(provider: str, exc: Exception) -> dict[str, Any]:
+        fault = classify_exception(exc, provider=provider)
+        # Store safe identifiers, not raw URLs, keys or response bodies.
+        safe_code = "source_discovery_budget_exhausted" if fault.code == "source_budget_exhausted" else fault.code
+        return {"provider": provider, "reason": type(exc).__name__ + ":" + safe_code,
+                "fault": fault.as_dict()}
 
     def check_budget(self) -> None:
         if time.monotonic() >= self.deadline:
@@ -1108,10 +1141,7 @@ class SourceResolutionEngine:
                             }
                         )
             except Exception as exc:
-                failure = {
-                    "provider": provider_name,
-                    "reason": f"{type(exc).__name__}:{str(exc)[:200]}",
-                }
+                failure = self._provider_failure(provider_name, exc)
                 provider_failures.append(failure)
                 rejections.append(
                     failure
@@ -1124,10 +1154,7 @@ class SourceResolutionEngine:
                 if kugou_reference is not None:
                     payload.update(kugou_reference)
             except Exception as exc:
-                failure = {
-                    "provider": "kugou_official_reference",
-                    "reason": f"{type(exc).__name__}:{str(exc)[:200]}",
-                }
+                failure = self._provider_failure("kugou_official_reference", exc)
                 provider_failures.append(failure)
                 rejections.append(failure)
                 payload["source_rejections"] = rejections
@@ -1156,13 +1183,13 @@ class SourceResolutionEngine:
                                 except CandidateRejected as exc:
                                     rejections.append({"provider": candidate.provider, "reason": str(exc)})
                         except Exception as exc:
-                            provider_failures.append({"provider": "localized_word_source", "reason": f"{type(exc).__name__}:{str(exc)[:200]}"})
+                            provider_failures.append(self._provider_failure("localized_word_source", exc))
                     reference = self._kugou_reference(variant)
                     if reference is not None:
                         payload.update(reference)
                         break
             except Exception as exc:
-                failure = {"provider": "apple_artist_identity", "reason": f"{type(exc).__name__}:{str(exc)[:200]}"}
+                failure = self._provider_failure("apple_artist_identity", exc)
                 provider_failures.append(failure)
                 rejections.append(failure)
         payload["source_observations"] = self.source_observations()
@@ -1193,24 +1220,31 @@ class SourceResolutionEngine:
                 if result is not None:
                     return Resolution(not_required=result, reason="confirmed_instrumental")
             except Exception as exc:
-                failure = {"provider": "instrumental_verification", "reason": f"{type(exc).__name__}:{str(exc)[:200]}"}
+                failure = self._provider_failure("instrumental_verification", exc)
                 provider_failures.append(failure)
                 rejections.append(failure)
                 payload["source_rejections"] = rejections
-        if provider_failures:
-            return Resolution(
-                alignment_payload=payload,
-                reason="online_source_temporarily_unavailable",
-                retryable_error=json.dumps(
-                    provider_failures,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-            )
-        return Resolution(
-            alignment_payload=payload,
-            reason="no_trusted_lyric_reference",
-        )
+        faults = [item["fault"] for item in provider_failures]
+        # A discovery result with the wrong title is ordinary absence, not an
+        # outage. An actual candidate rejected by the strict publisher means
+        # that identity/reference input is required; never weaken that gate.
+        for item in rejections:
+            if "fault" not in item and item.get("provider_id"):
+                faults.append(LyricFault("identity", "recording_identity_unverified",
+                                        provider=str(item.get("provider") or "")).as_dict())
+        if not faults:
+            faults = [LyricFault("no_source", "no_trusted_lyric_reference", action="recheck").as_dict()]
+        payload["source_faults"] = faults
+        primary = choose_fault(faults)
+        reason = ("online_source_temporarily_unavailable" if primary["category"] == "transport"
+                  and primary.get("retryable") else
+                  "source_budget_exhausted" if primary["category"] == "resource_budget" else
+                  "no_trusted_lyric_reference" if primary["category"] == "no_source" else
+                  "source_attention_required")
+        return Resolution(alignment_payload=payload, reason=reason,
+                          retryable_error=json.dumps(provider_failures, ensure_ascii=False, sort_keys=True)
+                              if provider_failures else "",
+                          faults=tuple(faults))
 
     def validate_mac_candidate(
         self,

@@ -331,7 +331,7 @@ SEARCH_COUNTRY = env("AMDL_SEARCH_COUNTRY", "CN").upper() or "CN"
 SEARCH_LANGUAGE = env("AMDL_SEARCH_LANGUAGE", "zh_cn") or "zh_cn"
 SEARCH_LIMIT = min(50, max(1, int(env("AMDL_SEARCH_LIMIT", "32") or "32")))
 SEARCH_PAGE_SIZE = min(8, max(1, int(env("AMDL_SEARCH_PAGE_SIZE", "8") or "8")))
-SEARCH_PROXY_URL = env("AMDL_SEARCH_PROXY_URL", TELEGRAM_PROXY_URL)
+SEARCH_PROXY_URL = env("AMDL_SEARCH_PROXY_URL", "")
 SEARCH_ATTEMPTS = max(1, int(env("AMDL_SEARCH_ATTEMPTS", "4") or "4"))
 SEARCH_TIMEOUT_SECONDS = max(5, int(env("AMDL_SEARCH_TIMEOUT_SECONDS", "25") or "25"))
 SEARCH_RETRY_DELAY_SECONDS = float(env("AMDL_SEARCH_RETRY_DELAY_SECONDS", "2") or "2")
@@ -789,6 +789,48 @@ def sync_word_lyrics_for_paths(paths, *, source_url="", logger=None, notificatio
             logger("[apple-word-lyrics] entry unavailable " + type(exc).__name__)
         return {"error": len(paths)}
 
+def sync_accepted_apple_word_lyrics(
+    job: Job,
+    paths: list[str | Path],
+    *,
+    source_url: str | None = None,
+) -> dict[str, int]:
+    """Reconcile one accepted Apple result, including verified existing media.
+
+    Call once at the successful parent boundary, never for a partial download.
+    Multiple original URLs have no single truthful storefront hint; embedded
+    media identities remain available and the journal retains the URL list.
+    """
+    paths = unique_path_strings(paths)
+    if not paths:
+        return {}
+    if source_url is None:
+        source_url = job.urls[0] if len(job.urls) == 1 else ""
+    context = None
+    if job.source == "telegram" and job.chat_id:
+        context = {
+            "source": job.source, "chat_id": job.chat_id,
+            "message_id": job.message_id, "task_id": job.task_id,
+        }
+    try:
+        summary = sync_word_lyrics_for_paths(
+            paths, source_url=source_url, notification_context=context, logger=log,
+        )
+        log(
+            f"[apple-word-lyrics] accepted result task={job.task_id} paths={len(paths)} "
+            + " ".join(f"{key}={int(summary.get(key, 0))}" for key in
+                       ("accepted", "cached", "not_available", "queued", "rejected", "error"))
+        )
+        if summary.get("accepted") or summary.get("character_normalized"):
+            trigger_navidrome_scan()
+        return summary
+    except Exception as exc:
+        # Audio success and lyric registration are separate outcomes.  Keep
+        # the established non-fatal policy without hiding this real failure.
+        log(f"[apple-word-lyrics] accepted result task={job.task_id} deferred: {type(exc).__name__}")
+        return {"error": len(paths)}
+
+
 def word_lyrics_provider_label(provider: str) -> str:
     return {
         "apple": "Apple Music 原生逐词歌词",
@@ -810,6 +852,15 @@ def format_word_lyrics_notification(
         metrics = {}
     title = truncate_display_text(str(metadata.get("title") or "未知标题"), 120)
     artist = truncate_display_text(str(metadata.get("artist") or "未知艺人"), 120)
+    if notification.terminal_status in {"needs_attention", "source_recovered"}:
+        from word_lyrics_automation.fault_messages import fault_description
+        if notification.terminal_status == "source_recovered":
+            return "\n".join(["逐词歌词已恢复处理", f"标题：{title}", f"艺人：{artist}",
+                "阻塞条件已变化，原任务正在自动继续；最终结果会另行通知。", f"后台任务：#{notification.job_id}"])
+        return "\n".join(["逐词歌词需要处理", f"标题：{title}", f"艺人：{artist}",
+            "原因：" + fault_description(notification.payload),
+            "已停止重复请求；同一问题只提醒一次。条件变化后会重新核验，已有音频和歌词保留。",
+            f"后台任务：#{notification.job_id}"])
     if notification.terminal_status == "waiting_source":
         from datetime import datetime, timedelta, timezone
         observations = notification.payload.get("source_observations") or []
@@ -822,13 +873,16 @@ def format_word_lyrics_notification(
             reason = "歌词来源暂时无法访问，检索尚未完成。"
         else:
             reason = "没有找到可信且版本匹配的歌词正文或逐词时间轴。"
+        if notification.payload.get("source_state"):
+            from word_lyrics_automation.fault_messages import fault_description
+            reason = fault_description(notification.payload)
         next_check = datetime.fromtimestamp(notification.next_attempt_at,
             timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
         return "\n".join([
             "逐词歌词正在等待来源 ⏳", f"标题：{title}", f"艺人：{artist}",
             f"原因：{reason}", "当前阶段：尚未开始声学对齐。",
             f"下次自动重查：{next_check}（北京时间）。",
-            "任务与诊断已保留，后续每六小时重查；同一等待状态只提醒一次，有最终结果会再通知。",
+            "任务与诊断已保留，将按故障类别有限重查；同一等待状态只提醒一次，恢复或有最终结果会再通知。",
             f"后台任务：#{notification.job_id}",
         ])
     if notification.terminal_status == "awaiting_mac_consent":
@@ -850,9 +904,13 @@ def format_word_lyrics_notification(
         )
     if notification.terminal_status == "completed":
         if result.get("lyric_status") == "not_required":
+            reviewed_skip = (result.get("provider") == "human_review_batch"
+                or metrics.get("classification_authority") == "human_review_batch")
             return "\n".join([
-                "无词配乐已核验 ✅", f"标题：{title}", f"艺人：{artist}",
-                "录音版本已由两处独立来源核对：这首没有歌词正文，无需生成逐词歌词。",
+                "纯音乐 / 无词配乐已跳过 ✅" if reviewed_skip else "无词配乐已核验 ✅",
+                f"标题：{title}", f"艺人：{artist}",
+                ("根据本次人工核对，已跳过纯音乐或无词配乐的逐词歌词生成。" if reviewed_skip else
+                 "录音版本已由两处独立来源核对：这首没有歌词正文，无需生成逐词歌词。"),
                 "播放器已添加无词配乐说明，音频文件未被修改。",
                 "Navidrome：已请求刷新。", f"后台任务：#{notification.job_id}",
             ])
@@ -2832,7 +2890,11 @@ def process_unified_music_job(job: Job) -> None:
                                delete_paths_json=json.dumps(delete_paths, ensure_ascii=False))
         if not wait_for_task_ready(job):
             raise LxFallbackStopped("parent stopped after publishing")
-        if provider != "Apple Music":
+        if provider == "Apple Music":
+            unified_download_phase(job, "Apple Music 无损已验收，检查歌词")
+            sync_accepted_apple_word_lyrics(job, paths, source_url=apple_url)
+            delete_paths = unified_owned_deletion_paths(job, paths, created)
+        else:
             unified_download_phase(job, f"{provider} 无损已验收，处理歌词")
             try:
                 sync_word_lyrics_for_paths(paths, source_url=apple_url,
@@ -5609,52 +5671,6 @@ def run_gamdl(
                 )
                 if sidecar_code != 0 and return_code == 0:
                     return_code = sidecar_code
-                try:
-                    word_summary = sync_word_lyrics_for_paths(
-                        changed_files,
-                        source_url=url,
-                        notification_context={
-                            "source": job.source,
-                            "chat_id": job.chat_id,
-                            "message_id": job.message_id,
-                            "task_id": job.task_id,
-                        },
-                        logger=lambda message: (
-                            log_handle.write(message + "\n"),
-                            log_handle.flush(),
-                            tail.append(message),
-                        ),
-                    )
-                    accepted_word_lyrics = int(word_summary.get("accepted", 0))
-                    cached_word_lyrics = int(word_summary.get("cached", 0))
-                    unavailable_word_lyrics = int(
-                        word_summary.get("not_available", 0)
-                    )
-                    rejected_word_lyrics = int(word_summary.get("rejected", 0))
-                    errored_word_lyrics = int(word_summary.get("error", 0))
-                    queued_word_lyrics = int(word_summary.get("queued", 0))
-                    word_note = (
-                        "[apple-word-lyrics] summary "
-                        f"accepted={accepted_word_lyrics} "
-                        f"cached={cached_word_lyrics} "
-                        f"not_available={unavailable_word_lyrics} "
-                        f"queued={queued_word_lyrics} "
-                        f"rejected={rejected_word_lyrics} "
-                        f"error={errored_word_lyrics}"
-                    )
-                    log_handle.write(word_note + "\n")
-                    log_handle.flush()
-                    tail.append(word_note)
-                    if accepted_word_lyrics or word_summary.get("character_normalized"):
-                        trigger_navidrome_scan()
-                except Exception as exc:
-                    word_note = (
-                        "[apple-word-lyrics] non-fatal sync failure: "
-                        f"{type(exc).__name__}"
-                    )
-                    log_handle.write(word_note + "\n")
-                    log_handle.flush()
-                    tail.append(word_note)
     if return_code == 0 and detected_failure_code:
         return_code = detected_failure_code
     return return_code, log_file, list(tail), verified_existing_paths
@@ -5860,10 +5876,16 @@ def log_has_pattern(log_file: Path, tail: list[str], pattern: re.Pattern[str]) -
 
 
 def is_wrapper_m3u8_failure(log_file: Path, tail: list[str]) -> bool:
+    from apple_account_network import is_terminal_account_auth_failure
+    if is_terminal_account_auth_failure(log_file, tail):
+        return False
     return log_has_pattern(log_file, tail, WRAPPER_M3U8_FAILURE_RE)
 
 
 def is_transient_gamdl_failure(log_file: Path, tail: list[str]) -> bool:
+    from apple_account_network import is_terminal_account_auth_failure
+    if is_terminal_account_auth_failure(log_file, tail):
+        return False
     return log_has_pattern(log_file, tail, TRANSIENT_GAMDL_FAILURE_RE)
 
 
@@ -6145,7 +6167,7 @@ def process_online_media_job(job: Job) -> None:
                 lines.append("部分逐字细分失败，原歌词已保留。")
             if int(online_word_summary.get("queued", 0)):
                 lines.append(
-                    "无词录音经核验后结案；暂缺来源会通知等待原因和下次重查时间，随后每六小时重查。有最终结果时，本 Bot 会主动通知。"
+                    "无词录音经核验后结案；暂缺来源会通知等待原因和下次重查时间，随后按故障类别有限重查；需要处理、恢复和完成时会主动通知。"
                 )
         lines.append(f"Navidrome 扫描：{'已触发' if result.scan_triggered else '未触发，将由定时扫描发现'}")
     else:
@@ -6248,6 +6270,8 @@ def process_job(job: Job) -> None:
     fallbacks: list[LxFallbackOutcome] = []
     completion_paths: list[str | Path] = []
     completion_delete_paths: list[str | Path] = []
+    accepted_apple_paths: list[str | Path] = []
+    created_apple_paths: list[Path] = []
     produced_media = False
     verified_existing_media = False
     for mode in modes:
@@ -6257,6 +6281,7 @@ def process_job(job: Job) -> None:
             break
         pending_urls, existing_tracks = deduplicate_apple_music_urls(job.urls, mode)
         completion_paths.extend(track.path for track in existing_tracks)
+        accepted_apple_paths.extend(track.path for track in existing_tracks)
         verified_existing_media = verified_existing_media or bool(existing_tracks)
         if existing_tracks:
             paths = "\n".join(
@@ -6358,6 +6383,9 @@ def process_job(job: Job) -> None:
             ]
             completion_paths.extend(changed_paths)
             completion_paths.extend(run_existing_paths)
+            accepted_apple_paths.extend(changed_paths)
+            accepted_apple_paths.extend(run_existing_paths)
+            created_apple_paths.extend(created_paths)
             produced_media = produced_media or bool(changed_paths)
             verified_existing_media = verified_existing_media or bool(run_existing_paths)
             completion_delete_paths.extend(
@@ -6441,6 +6469,15 @@ def process_job(job: Job) -> None:
                 job,
                 f"{mode.upper()} 下载失败，退出码 {return_code}。\n日志：{log_file}\n\n最后输出：\n{tail_text}",
             )
+
+    if (accepted_apple_paths and not failures and not stop_event.is_set()
+            and not task_should_stop(job) and wait_for_task_ready(job)):
+        sync_accepted_apple_word_lyrics(job, accepted_apple_paths)
+        # The same newly-created audio retains ownership of any native lyric
+        # sidecars published by the moved hook. Existing media is never adopted.
+        completion_delete_paths.extend(
+            deletion_targets_for_media("apple_music", created_apple_paths)
+        )
 
     if preserve_job_for_restart(job):
         clear_download_progress(job)

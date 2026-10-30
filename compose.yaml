@@ -38,6 +38,29 @@ x-lyrics-env: &lyrics-env
   WRAPPER_URL: http://wrapper
   WRAPPER_DECRYPT_HOST: wrapper
   WRAPPER_DECRYPT_PORT: "10020"
+  # Telegram has its own explicit proxy; music must not inherit an ambient one.
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  ALL_PROXY: ""
+  http_proxy: ""
+  https_proxy: ""
+  all_proxy: ""
+  AMDL_SEARCH_PROXY_URL: ${AMDL_SEARCH_PROXY_URL:-}
+  AMDL_DOWNLOAD_PROXY_URL: ${AMDL_DOWNLOAD_PROXY_URL:-}
+  GAMDL_ACCOUNT_FALLBACK_PROXY_URLS: "${GAMDL_ACCOUNT_FALLBACK_PROXY_URLS:-[]}"
+  WORD_LYRICS_MEDIA_INTEGRITY_ENABLED: ${WORD_LYRICS_MEDIA_INTEGRITY_ENABLED:-true}
+  WORD_LYRICS_MEDIA_CHECK_TIMEOUT_SECONDS: ${WORD_LYRICS_MEDIA_CHECK_TIMEOUT_SECONDS:-120}
+  WORD_LYRICS_PLAYER_VERIFY_ENABLED: ${WORD_LYRICS_PLAYER_VERIFY_ENABLED:-true}
+  WORD_LYRICS_SOURCE_BUDGET_SECONDS: ${WORD_LYRICS_SOURCE_BUDGET_SECONDS:-180}
+  WORD_LYRICS_SOURCE_POLL_SECONDS: ${WORD_LYRICS_SOURCE_POLL_SECONDS:-5}
+  WORD_LYRICS_SOURCE_LEASE_SECONDS: ${WORD_LYRICS_SOURCE_LEASE_SECONDS:-900}
+  WORD_LYRICS_FINGERPRINT_RECONCILE_SECONDS: ${WORD_LYRICS_FINGERPRINT_RECONCILE_SECONDS:-60}
+  WORD_LYRICS_NAS_MAX_RUNS: ${WORD_LYRICS_NAS_MAX_RUNS:-2}
+  WORD_LYRICS_HEALTH_CONFIG: ${WORD_LYRICS_HEALTH_CONFIG:-/state/word-lyrics/automation/service-health-config.json}
+  WORD_LYRICS_PROBE_INTERVAL_SECONDS: ${WORD_LYRICS_PROBE_INTERVAL_SECONDS:-900}
+  WORD_LYRICS_PROBE_MAX_AGE_SECONDS: ${WORD_LYRICS_PROBE_MAX_AGE_SECONDS:-3600}
+  WORD_LYRICS_WORKER_MAX_AGE_SECONDS: ${WORD_LYRICS_WORKER_MAX_AGE_SECONDS:-300}
+  WORD_LYRICS_SOURCE_REVISION: ${WORD_LYRICS_SOURCE_REVISION:-}
 
 services:
   legacy-wrapper:
@@ -183,10 +206,11 @@ services:
       # evaluated by each job; first installation has no logged-in wrapper.
       wrapper: {condition: service_started}
     healthcheck:
-      test: [CMD, python, -c, "import json,time,pathlib; p=json.loads(pathlib.Path('/state/word-lyrics/automation/source-worker-health.json').read_text()); assert time.time()-p['updated_at']<3600"]
+      test: [CMD, python, -m, word_lyrics_automation.worker_watchdog]
       interval: 60s
-      timeout: 10s
+      timeout: 20s
       retries: 3
+      start_period: 120s
     logging: *log
 
   word-lyrics-nas-aligner:

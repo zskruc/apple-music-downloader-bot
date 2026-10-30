@@ -152,6 +152,7 @@ class LyricMessageStore:
         needs_notice = [row for row in rows if row['needs_notice']]
         return {'pending': pending, 'unknown': unknown, 'errors': errors,
                 'completed': sum(bool(row['completed']) for row in rows),
+                'attention': sum(row['status'] == 'needs_attention' for row in rows),
                 'failed': sum(bool(row['failed']) for row in rows) + len(errors),
                 'notice_pending': len(needs_notice) + sum(not row['delivered_at'] for row in errors),
                 'remaining': len(pending) + len(unknown),
@@ -166,7 +167,11 @@ class LyricMessageStore:
                  f"已完成 {snapshot['completed']} 首，失败 {snapshot['failed']} 首。"]
         if snapshot['notice_pending']:
             lines.append(f"正在发送结果通知：{snapshot['notice_pending']} 首。")
+        if snapshot.get('attention'):
+            lines.append(f"需要处理来源、权限或文件问题：{snapshot['attention']} 首（已暂停重试）。")
         labels = {'waiting_source': '等待歌词来源', 'awaiting_mac_consent': '等待确认',
+                  'needs_attention': '已暂停，需处理输入问题',
+                  'retry_source': '来源重试中',
                   'leased_alignment': '分析中', 'retry_alignment': '等待重试',
                   'candidate_pending': '校验中', 'leased_validation': '校验中',
                   'scan_pending': '刷新播放器', 'leased_scan': '刷新播放器'}

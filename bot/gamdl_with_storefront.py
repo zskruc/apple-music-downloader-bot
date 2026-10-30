@@ -130,6 +130,9 @@ def main() -> int:
     # Import the click command before monkey patching. gamdl inspects the original
     # create_from_wrapper signature while importing its CLI config.
     from gamdl.cli.cli import main as gamdl_main
+    from apple_account_network import install_account_network_patch
+
+    install_account_network_patch()
 
     storefront = os.environ.get("GAMDL_STOREFRONT_OVERRIDE", "").strip().lower()
     if not storefront and env_flag("GAMDL_USE_URL_STOREFRONT", True):

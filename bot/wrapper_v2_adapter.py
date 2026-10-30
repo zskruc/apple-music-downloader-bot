@@ -304,17 +304,38 @@ def get_webplayback(
         "cookie": f"media-user-token={music_token}",
         "user-agent": "AppleMusicWrapperV2Adapter/1.0",
     }
-    with httpx.Client(
-        trust_env=False,
-        timeout=httpx.Timeout(60.0),
-    ) as client:
-        response = client.post(
-            WEBPLAYBACK_URL,
-            headers=headers,
-            json={"salableAdamId": adam_id, "language": APPLE_LANGUAGE},
+    # Retry only this HTTP exchange.  Semantic playback failures and the
+    # separately bounded legacy M3U8 operation must not be repeated here.
+    for attempt in range(1, 4):
+        try:
+            with httpx.Client(
+                trust_env=False,
+                timeout=httpx.Timeout(60.0),
+            ) as client:
+                response = client.post(
+                    WEBPLAYBACK_URL,
+                    headers=headers,
+                    json={"salableAdamId": adam_id, "language": APPLE_LANGUAGE},
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.TransportError as exc:
+            if attempt >= 3:
+                raise
+            error_detail = f"error={type(exc).__name__}"
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status not in {408, 429, 500, 502, 503, 504} or attempt >= 3:
+                raise
+            error_detail = f"error=HTTPStatusError status={status}"
+        else:
+            break
+        delay = 2 ** attempt
+        log(
+            "webplayback temporary HTTP failure "
+            f"{error_detail}; retrying attempt={attempt + 1}/3 delay={delay}s"
         )
-        response.raise_for_status()
-        payload = response.json()
+        time.sleep(delay)
     if not isinstance(payload, dict):
         raise RuntimeError("Apple web playback returned invalid JSON")
     if unavailable := playback_unavailable_error(payload):

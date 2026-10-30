@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .fingerprint import MP4_AUDIO_IDENTITY_METHOD, media_fingerprint, mp4_audio_identity
+from .faults import choose_fault, retry_delay, source_context_key, sanitize_fault
 from .notifications import (initialize_notification_tables, register_notification_subscription,
                             copy_notification_subscriptions)
 from .text import normalize_text
@@ -92,6 +93,15 @@ def _fingerprint_key(value: dict[str, Any]) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """SQLite's normal context manager commits but does not close the handle."""
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 class QueueStore:
     def __init__(
         self,
@@ -105,7 +115,7 @@ class QueueStore:
         self._initialize()
 
     def connect(self) -> sqlite3.Connection:
-        database = sqlite3.connect(self.database_path, timeout=30)
+        database = sqlite3.connect(self.database_path, timeout=30, factory=_ClosingConnection)
         database.row_factory = sqlite3.Row
         database.execute("PRAGMA busy_timeout=30000")
         database.execute("PRAGMA foreign_keys=ON")
@@ -206,9 +216,13 @@ class QueueStore:
         # also makes old jobs stranded by a cumulative limit runnable again.
         if stage == "source":
             return int(row["attempts"])
+        # Resuming an explicitly held stage grants a fresh bounded cycle,
+        # without deleting or rewriting previous claim/failure events.
+        payload = json.loads(row["payload_json"] or "{}")
+        after = int((payload.get("stage_attempt_after") or {}).get(stage) or 0)
         claims = database.execute(
-            "SELECT detail_json FROM events WHERE job_id=? AND event='claimed'",
-            (int(row["id"]),),
+            "SELECT detail_json FROM events WHERE job_id=? AND event='claimed' AND id>?",
+            (int(row["id"]), after),
         ).fetchall()
         return sum(json.loads(claim["detail_json"]).get("stage") == stage for claim in claims)
 
@@ -228,6 +242,17 @@ class QueueStore:
         job_id = int(row["id"])
         now = self.clock()
         payload = json.loads(row["payload_json"] or "{}")
+        state = payload.get("source_state") or {}
+        if state and (stage == "source" or state.get("stage") == stage):
+            state = dict(payload["source_state"])
+            state.update(action="needs_attention", budget_exhausted=True,
+                         exhausted_reason=error, held_at=now)
+            payload["source_state"] = state
+            database.execute("""UPDATE jobs SET status='needs_attention', next_attempt_at=0,
+                lease_owner='',lease_token='',lease_expires_at=0,last_error=?,payload_json=?,updated_at=?
+                WHERE id=?""", (error, _json(payload), now, job_id))
+            self._event(database, job_id, "source_needs_attention", state)
+            return "needs_attention"
         if (stage == "source" and not normalize_text(str(payload.get("reference_text") or ""))
                 and not payload.get("reference_lines")):
             # Discovery with no trusted text keeps its existing durable slow
@@ -238,14 +263,23 @@ class QueueStore:
                 first_wait_at=history.get("first_wait_at") or now,
                 last_wait_at=now, last_error=error)
             payload["source_recovery"] = history
-            next_at = now + 21600
+            exhausted = history["wait_cycles"] > 12
+            next_at = 0 if exhausted else now + 21600
+            status = "needs_attention" if exhausted else "waiting_source"
+            if exhausted:
+                payload["source_state"] = {"category": "no_source", "code": "source_recheck_budget_exhausted",
+                    "retryable": False, "action": "needs_attention", "budget_exhausted": True,
+                    "context_key": source_context_key(Path(row["media_path"]),
+                        json.loads(row["metadata_json"] or "{}"), row["source_url"])}
             database.execute("""UPDATE jobs SET status='waiting_source', attempts=0,
                 next_attempt_at=?, lease_owner='', lease_token='', lease_expires_at=0,
                 last_error=?, payload_json=?, updated_at=? WHERE id=?""",
                 (next_at, error, _json(payload), now, job_id))
+            if exhausted:
+                database.execute("UPDATE jobs SET status='needs_attention' WHERE id=?", (job_id,))
             self._event(database, job_id, "source_recheck_scheduled", {
                 "error": error, "next_attempt_at": next_at, "wait_cycles": history["wait_cycles"]})
-            return "waiting_source"
+            return status
         database.execute("""UPDATE jobs SET status='dead_letter', next_attempt_at=0,
             lease_owner='', lease_token='', lease_expires_at=0, last_error=?, updated_at=? WHERE id=?""",
             (error, now, job_id))
@@ -687,7 +721,19 @@ class QueueStore:
         now = self.clock()
         with self.connect() as database:
             database.execute("BEGIN IMMEDIATE")
-            self._leased_row(database, job_id, token, expected=set(expected_statuses))
+            leased = self._leased_row(database, job_id, token, expected=set(expected_statuses))
+            payload = json.loads(leased["payload_json"] or "{}")
+            state = dict(payload.get("source_state") or {})
+            if state.get("action") == "resuming":
+                # Cross-stage recovery is confirmed only after the resumed
+                # validator/player path succeeds, not merely by a good probe.
+                history = dict(payload.get("source_recovery") or {})
+                history.update(last_recovered_at=now, recovered_from=dict(state),
+                               recovery_generation=int(history.get("recovery_generation") or 0) + 1)
+                state.update(action="recovered", recovered_at=now)
+                payload.update(source_recovery=history, source_state=state)
+                database.execute("UPDATE jobs SET payload_json=? WHERE id=?", (_json(payload), job_id))
+                self._event(database, job_id, "source_recovered", history)
             database.execute(
                 """
                 UPDATE jobs SET status='completed', result_json=?, lease_owner='',
@@ -700,6 +746,307 @@ class QueueStore:
             row = database.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             assert row is not None
             return self._row_to_job(row)
+
+    def source_fault(self, job_id: int, token: str, *, faults: list[dict[str, Any]],
+                     diagnostic_payload: dict[str, Any], context_key: str,
+                     max_temporary_attempts: int = 8, max_slow_rechecks: int = 4,
+                     max_age_seconds: float = 72 * 3600) -> QueueJob:
+        """Persist a classified, bounded failure in the original job lifecycle.
+
+        Leases and acoustic retry budgets are separate. A source hold does not
+        delete subscriptions, candidates, history or any existing media.
+        """
+        now = self.clock()
+        faults = [sanitize_fault(value) for value in faults]
+        primary = choose_fault(faults)
+        with self.connect() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = self._leased_row(database, job_id, token, expected={"leased_source"})
+            previous = json.loads(row["payload_json"] or "{}")
+            old_state = dict(previous.get("source_state") or {})
+            count = int(old_state.get("failure_count") or 0) + 1
+            first = float(old_state.get("first_failure_at", now))
+            generation = int(old_state.get("generation") or 0)
+            state = {**primary, "failure_count": count, "first_failure_at": first,
+                     "last_failure_at": now, "generation": generation, "context_key": context_key,
+                     "budget_exhausted": False, "stage": "source"}
+            state["signature"] = hashlib.sha256(_json([
+                generation, primary.get("category"), primary.get("code"), primary.get("provider"),
+            ]).encode()).hexdigest()
+            history = dict(previous.get("source_recovery") or {})
+            history["total_claims"] = int(history.get("total_claims") or 0) + 1
+            waiting = int(history.get("wait_cycles") or 0)
+            aged = now - first >= max_age_seconds
+            if primary.get("retryable") is True:
+                exhausted = count >= min(max(1, max_temporary_attempts), int(row["max_attempts"])) or aged
+                status = "needs_attention" if exhausted else "retry_source"
+                delay = retry_delay(count, retry_after=primary.get("retry_after_seconds"))
+            elif primary.get("action") == "recheck":
+                initial_limit = min(4, int(row["max_attempts"]))
+                if count < initial_limit and not waiting:
+                    status, delay, exhausted = "retry_source", retry_delay(count), aged
+                else:
+                    waiting += 1
+                    history.update(wait_cycles=waiting, first_wait_at=history.get("first_wait_at", now),
+                                   last_wait_at=now)
+                    exhausted = waiting > max(0, max_slow_rechecks) or aged
+                    status, delay = "waiting_source", retry_delay(waiting, base=21600, maximum=25920)
+                    if exhausted:
+                        status = "needs_attention"
+            else:
+                status, delay, exhausted = "needs_attention", 0, False
+            if aged:
+                status = "needs_attention"
+            if status == "needs_attention":
+                state["action"] = "needs_attention"
+                state["budget_exhausted"] = bool(exhausted)
+                state["held_at"] = now
+            next_at = now + delay if status != "needs_attention" else 0
+            state.update(next_attempt_at=next_at, max_age_seconds=max_age_seconds,
+                         max_temporary_attempts=max_temporary_attempts, max_slow_rechecks=max_slow_rechecks)
+            payload = {**previous, **diagnostic_payload, "source_faults": faults,
+                       "source_state": state, "source_recovery": history}
+            cycles = list(previous.get("source_fault_history") or [])
+            cycles.append({**state, "faults": faults, "status": status})
+            payload["source_fault_history"] = cycles[-96:]
+            error = str(primary.get("category")) + ":" + str(primary.get("code"))
+            database.execute("""UPDATE jobs SET status=?,attempts=?,next_attempt_at=?,
+                lease_owner='',lease_token='',lease_expires_at=0,last_error=?,payload_json=?,updated_at=?
+                WHERE id=?""", (status, 0 if status == "waiting_source" else row["attempts"],
+                                  next_at, error, _json(payload), now, job_id))
+            self._event(database, job_id, "source_needs_attention" if status == "needs_attention"
+                        else "source_retry_scheduled", {"state": state, "status": status})
+            return self._row_to_job(database.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def mark_source_recovered(self, job_id: int, token: str) -> QueueJob:
+        """Record one recovery without discarding the failure lifecycle."""
+        with self.connect() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = self._leased_row(database, job_id, token, expected={"leased_source"})
+            payload = json.loads(row["payload_json"] or "{}")
+            state = dict(payload.get("source_state") or {})
+            if state and state.get("action") != "recovered":
+                history = dict(payload.get("source_recovery") or {})
+                history.update(last_recovered_at=self.clock(), recovered_from=state,
+                               recovery_generation=int(history.get("recovery_generation") or 0) + 1)
+                state.update(action="recovered", recovered_at=self.clock())
+                payload.update(source_recovery=history, source_state=state)
+                database.execute("UPDATE jobs SET payload_json=? WHERE id=?", (_json(payload), job_id))
+                self._event(database, job_id, "source_recovered", history)
+            return self._row_to_job(database.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def hold_for_attention(self, job_id: int, token: str, *, stage: str,
+                           fault: dict[str, Any], diagnostic_payload: dict[str, Any] | None = None,
+                           budget_exhausted: bool = False) -> QueueJob:
+        if stage not in STAGE_LEASED:
+            raise ValueError("unsupported queue stage")
+        fault = sanitize_fault(fault)
+        with self.connect() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = self._leased_row(database, job_id, token, expected={STAGE_LEASED[stage]})
+            payload = json.loads(row["payload_json"] or "{}")
+            payload.update(diagnostic_payload or {})
+            state = {**fault, "action": "needs_attention", "stage": stage,
+                     "budget_exhausted": budget_exhausted,
+                     "held_at": self.clock(),
+                     "generation": int((payload.get("source_state") or {}).get("generation") or 0),
+                     "context_key": source_context_key(Path(row["media_path"]),
+                         json.loads(row["metadata_json"] or "{}"), row["source_url"])}
+            state["signature"] = hashlib.sha256(_json([
+                stage, state["generation"], state.get("category"), state.get("code"),
+            ]).encode()).hexdigest()
+            payload["source_state"] = state
+            payload["source_faults"] = [fault]
+            database.execute("""UPDATE jobs SET status='needs_attention',next_attempt_at=0,
+                lease_owner='',lease_token='',lease_expires_at=0,last_error=?,payload_json=?,updated_at=?
+                WHERE id=?""", (str(fault.get("category")) + ":" + str(fault.get("code")),
+                                  _json(payload), self.clock(), job_id))
+            self._event(database, job_id, "source_needs_attention", state)
+            return self._row_to_job(database.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def hold_job(self, job_id: int, token: str, *, stage: str,
+                 fault: dict[str, Any], diagnostic_payload: dict[str, Any] | None = None,
+                 budget_exhausted: bool = False) -> QueueJob:
+        """Shared gate for permanent faults before source, inference or scan.
+
+        The stage's current lease must still be owned. Existing publication,
+        diagnostics and notification subscriptions remain intact.
+        """
+        if stage not in STAGE_LEASED:
+            raise ValueError("unsupported queue stage")
+        return self.hold_for_attention(job_id, token, stage=stage, fault=fault,
+                                       diagnostic_payload=diagnostic_payload,
+                                       budget_exhausted=budget_exhausted)
+
+    def resume_source_after_change(self, job_id: int, *, context_key: str, reason: str,
+                                   manual_review: bool = False) -> QueueJob:
+        """Resume the held stage after concrete input change or explicit review.
+
+        Bad media never auto-resumes on a sidecar/policy change. A replacement
+        media fingerprint follows enqueue's normal supersession/history path.
+        Explicit audited manual review may retry validation, never bypass it.
+        """
+        now = self.clock()
+        with self.connect() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None or row["status"] != "needs_attention":
+                raise RuntimeError("only an unleased attention job can resume after input change")
+            payload = json.loads(row["payload_json"] or "{}")
+            state = dict(payload.get("source_state") or {})
+            if not manual_review and (not state.get("context_key") or state["context_key"] == context_key):
+                raise RuntimeError("source/reference/policy context has not changed")
+            if state.get("category") == "media_integrity" and not manual_review:
+                raise RuntimeError("media integrity hold requires replacement media or explicit review")
+            stage = str(state.get("stage") or "source")
+            ready = {"source": "queued_source", "alignment": "needs_alignment",
+                     "mac_alignment": "needs_mac_alignment", "validation": "candidate_pending",
+                     "scan": "scan_pending"}
+            if stage not in ready:
+                raise RuntimeError("held job has an unsupported recovery stage")
+            # Published candidates must go back through their scan/player
+            # checks, never through source discovery or a new model run.
+            if stage == "scan" and not json.loads(row["result_json"] or "{}").get("candidate_sha256"):
+                raise RuntimeError("scan recovery is missing its durable publication")
+            resumed = dict(state)
+            resumed.update(context_key=context_key, generation=int(state.get("generation") or 0) + 1,
+                           failure_count=0, first_failure_at=now, action="resuming", budget_exhausted=False)
+            payload["source_state"] = resumed
+            history = dict(payload.get("source_recovery") or {})
+            history.update(wait_cycles=0, resumed_at=now, resume_reason=str(reason)[:200])
+            payload["source_recovery"] = history
+            epochs = dict(payload.get("stage_attempt_after") or {})
+            epochs[stage] = database.execute("SELECT COALESCE(MAX(id),0) FROM events WHERE job_id=?",
+                                            (job_id,)).fetchone()[0]
+            payload["stage_attempt_after"] = epochs
+            database.execute("""UPDATE jobs SET status=?,attempts=0,next_attempt_at=?,
+                lease_owner='',lease_token='',lease_expires_at=0,payload_json=?,updated_at=? WHERE id=?""",
+                (ready[stage], now, _json(payload), now, job_id))
+            self._event(database, job_id, "source_context_changed", {
+                "previous": state, "context_key": context_key, "reason": str(reason)[:200],
+                "manual_review": manual_review, "resumed_stage": stage})
+            return self._row_to_job(database.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def reconcile_source_holds(self) -> list[int]:
+        resumed = []
+        for job in self.active_jobs():
+            state = job.payload.get("source_state") or {}
+            if (job.status != "needs_attention" or state.get("category") == "media_integrity"
+                    or state.get("stage", "source") != "source"):
+                continue
+            context = source_context_key(Path(job.media_path), job.metadata, job.source_url)
+            if state.get("context_key") and state["context_key"] != context:
+                try:
+                    self.resume_source_after_change(job.id, context_key=context,
+                                                    reason="reference_source_or_policy_changed")
+                    resumed.append(job.id)
+                except RuntimeError:
+                    # Another process may have resumed/replaced this exact row.
+                    pass
+        return resumed
+
+    def resume_dependency_holds(self, evidence: dict[str, Any], *,
+                                max_evidence_age_seconds: float = 3600) -> list[int]:
+        """Consume a fresh, persisted real-probe failure-to-success transition.
+
+        A heartbeat, first successful probe, cached old success or unrelated
+        dependency can never restart an exhausted job. Each context/generation
+        is consumed once per job, even if the next real request fails again.
+        """
+        if not 0 < max_evidence_age_seconds <= 3600:
+            raise ValueError("recovery evidence freshness must be within one hour")
+        now = self.clock()
+        probes = []
+        for value in evidence.values() if isinstance(evidence, dict) else ():
+            capability = value.get("capability") if isinstance(value, dict) else None
+            if capability not in {"source", "player"}:
+                continue
+            if not isinstance(value, dict) or value.get("ok") is not True or value.get("configured") is False:
+                continue
+            if value.get("status") != "ok" or value.get("capability") != capability:
+                continue
+            generation = value.get("recovery_generation")
+            context = value.get("context_key")
+            if type(generation) is not int or generation < 1 or not isinstance(context, str) or not context:
+                continue
+            try:
+                checked, recovered, failed = (float(value[key]) for key in
+                                             ("checked_at", "recovered_at", "last_failure_at"))
+            except (ValueError, TypeError, KeyError):
+                continue
+            if not (0 < failed < recovered <= checked <= now + 5
+                    and now - checked <= max_evidence_age_seconds):
+                continue
+            provider = str(value.get("provider") or value.get("name") or "")
+            token = hashlib.sha256(_json([capability, provider, context]).encode()).hexdigest()
+            probes.append((capability, provider, token, generation, recovered, checked))
+        if not probes:
+            return []
+
+        def dependency(provider):
+            provider = str(provider or "")
+            if provider.startswith("kugou"):
+                return "kugou"
+            if provider.startswith("netease"):
+                return "netease"
+            return provider
+
+        resumed = []
+        with self.connect() as database:
+            database.execute("BEGIN IMMEDIATE")
+            for row in database.execute("SELECT * FROM jobs WHERE status='needs_attention'").fetchall():
+                payload = json.loads(row["payload_json"] or "{}")
+                state = dict(payload.get("source_state") or {})
+                stage = str(state.get("stage") or "source")
+                category = state.get("category")
+                if state.get("budget_exhausted") is not True:
+                    continue
+                if not ((stage == "source" and category in {"transport", "resource_budget"})
+                        or (stage == "scan" and category == "playback")):
+                    continue
+                held_at = float(state.get("held_at") or row["updated_at"])
+                receipts = dict(payload.get("dependency_recoveries") or {})
+                for capability, provider, token, generation, recovered, checked in probes:
+                    if capability != ("source" if stage == "source" else "player") or recovered <= held_at:
+                        continue
+                    previous = receipts.get(token) or {}
+                    if generation <= int(previous.get("generation") or 0):
+                        continue
+                    if stage == "source" and category != "resource_budget":
+                        affected = [state, *(payload.get("source_faults") or [])]
+                        if not any(not fault.get("provider") or
+                                   dependency(fault.get("provider")) == dependency(provider)
+                                   for fault in affected if fault.get("retryable") is True):
+                            continue
+                    if (stage == "scan" and state.get("provider")
+                            and dependency(state["provider"]) != dependency(provider)):
+                        continue
+                    if stage == "scan" and not json.loads(row["result_json"] or "{}").get("candidate_sha256"):
+                        continue
+                    receipts[token] = {"generation": generation, "recovered_at": recovered,
+                                       "checked_at": checked, "capability": capability}
+                    payload["dependency_recoveries"] = receipts
+                    state.update(action="resuming", generation=int(state.get("generation") or 0) + 1,
+                                 failure_count=0, first_failure_at=now, budget_exhausted=False)
+                    payload["source_state"] = state
+                    history = dict(payload.get("source_recovery") or {})
+                    history.update(wait_cycles=0, resumed_at=now,
+                                   resume_reason="verified_dependency_recovery")
+                    payload["source_recovery"] = history
+                    epochs = dict(payload.get("stage_attempt_after") or {})
+                    epochs[stage] = database.execute("SELECT COALESCE(MAX(id),0) FROM events WHERE job_id=?",
+                                                    (row["id"],)).fetchone()[0]
+                    payload["stage_attempt_after"] = epochs
+                    status = "queued_source" if stage == "source" else "scan_pending"
+                    database.execute("""UPDATE jobs SET status=?,attempts=0,next_attempt_at=?,
+                        lease_owner='',lease_token='',lease_expires_at=0,payload_json=?,updated_at=? WHERE id=?""",
+                        (status, now, _json(payload), now, row["id"]))
+                    self._event(database, int(row["id"]), "dependency_recovery_resumed", {
+                        "stage": stage, "token": token, "generation": generation,
+                        "recovered_at": recovered, "checked_at": checked})
+                    resumed.append(int(row["id"]))
+                    break
+        return resumed
 
     def wait_for_source(self, job_id: int, token: str, *, error: str,
                         diagnostic_payload: dict[str, Any], delay_seconds: float = 21600) -> QueueJob:
@@ -720,11 +1067,21 @@ class QueueStore:
                            first_wait_at=history.get("first_wait_at") or now,
                            last_wait_at=now, last_error=str(error)[:2000])
             payload = {**diagnostic_payload, "source_recovery": history}
-            next_at = now + max(3600, float(delay_seconds))
+            # Bound legacy callers too; old jobs keep their history and first
+            # twelve slow cycles, then require a concrete input change.
+            exhausted = history["wait_cycles"] > 12
+            next_at = 0 if exhausted else now + max(3600, float(delay_seconds))
             database.execute("""UPDATE jobs SET status='waiting_source', attempts=0,
                 next_attempt_at=?, lease_owner='', lease_token='', lease_expires_at=0,
                 last_error=?, payload_json=?, updated_at=? WHERE id=?""",
                 (next_at, str(error)[:2000], _json(payload), now, job_id))
+            if exhausted:
+                payload["source_state"] = {"category": "no_source", "code": "source_recheck_budget_exhausted",
+                    "retryable": False, "action": "needs_attention", "budget_exhausted": True,
+                    "context_key": source_context_key(Path(row["media_path"]),
+                        json.loads(row["metadata_json"] or "{}"), row["source_url"])}
+                database.execute("UPDATE jobs SET status='needs_attention',payload_json=? WHERE id=?",
+                                 (_json(payload), job_id))
             self._event(database, job_id, "source_recheck_scheduled", {"error": str(error)[:2000],
                 "next_attempt_at": next_at, "wait_cycles": history["wait_cycles"]})
             return self._row_to_job(database.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
@@ -783,6 +1140,7 @@ class QueueStore:
         base_delay_seconds: float = 60,
         maximum_delay_seconds: float = 21600,
         diagnostic_payload: dict[str, Any] | None = None,
+        jitter: bool = False,
     ) -> QueueJob:
         if stage not in STAGE_ELIGIBLE:
             raise ValueError(f"unsupported queue stage: {stage}")
@@ -802,7 +1160,8 @@ class QueueStore:
                 next_at = 0.0
             else:
                 status = f"retry_{stage}"
-                delay = min(maximum_delay_seconds, base_delay_seconds * 2 ** max(0, attempts - 1))
+                delay = (retry_delay(attempts, base=base_delay_seconds, maximum=maximum_delay_seconds)
+                         if jitter else min(maximum_delay_seconds, base_delay_seconds * 2 ** max(0, attempts - 1)))
                 next_at = now + delay
             safe_error = str(error)[:2000]
             database.execute(

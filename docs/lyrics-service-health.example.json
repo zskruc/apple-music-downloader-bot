@@ -1,0 +1,30 @@
+{
+  "rollout_started_at": null,
+  "timezone": "UTC",
+  "source": {
+    "title": "",
+    "artist": "",
+    "duration_ms": 0,
+    "lyric_id": ""
+  },
+  "additional_sources": {
+    "amll": {
+      "title": "",
+      "artist": ""
+    },
+    "netease": {
+      "song_id": ""
+    }
+  },
+  "player": {
+    "song_id": "",
+    "sidecar_path": "",
+    "candidate_sha256": "",
+    "media_path": "",
+    "source_fingerprint": {
+      "sha256": "",
+      "size": 0,
+      "mtime_ns": 0
+    }
+  }
+}

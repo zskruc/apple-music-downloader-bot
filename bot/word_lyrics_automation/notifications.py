@@ -70,6 +70,17 @@ def initialize_notification_tables(database: sqlite3.Connection) -> None:
         message_id TEXT NOT NULL, delivered_at REAL NOT NULL,
         PRIMARY KEY(job_id,kind), FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)""")
 
+    database.execute("""CREATE TABLE IF NOT EXISTS notification_lifecycle_deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL,
+        recipient_key TEXT NOT NULL, context_json TEXT NOT NULL, event_key TEXT NOT NULL,
+        event_status TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at REAL NOT NULL DEFAULT 0, lease_owner TEXT NOT NULL DEFAULT '',
+        lease_token TEXT NOT NULL DEFAULT '', lease_expires_at REAL NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, updated_at REAL NOT NULL,
+        delivered_at REAL NOT NULL DEFAULT 0, chat_id TEXT NOT NULL DEFAULT '', message_id TEXT NOT NULL DEFAULT '',
+        UNIQUE(job_id,recipient_key,event_key),
+        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)""")
+
 
 def _legacy_receipt_status(database: sqlite3.Connection, job_id: int, receipt: sqlite3.Row,
                            fallback: str) -> str:
@@ -235,7 +246,7 @@ class NotificationStore:
         now = self.clock()
         with self.connect() as database:
             database.execute("BEGIN IMMEDIATE")
-            for table in ("notification_deliveries", "source_wait_deliveries", "notification_subscription_deliveries"):
+            for table in ("notification_deliveries", "source_wait_deliveries", "notification_subscription_deliveries", "notification_lifecycle_deliveries"):
                 database.execute(
                     f"""
                 UPDATE {table}
@@ -246,6 +257,9 @@ class NotificationStore:
                     """,
                     (now, now, now),
                 )
+            lifecycle = self._claim_lifecycle(database, now, owner, lease_seconds)
+            if lifecycle is not None:
+                return lifecycle
             for kind, statuses in (("terminal", "'completed','dead_letter'"),
                                    ("consent", "'awaiting_mac_consent'"),
                                    ("source_wait", "'waiting_source'")):
@@ -286,6 +300,47 @@ class NotificationStore:
                 (job_id, owner, token, now + max(30.0, lease_seconds), now, now),
             )
             return self._decode(selected, token, kind="source_wait" if table == "source_wait_deliveries" else "consent" if selected["status"] == "awaiting_mac_consent" else "terminal")
+
+    def _claim_lifecycle(self, database, now, owner, lease_seconds):
+        rows = database.execute("""SELECT * FROM jobs
+            WHERE status NOT IN ('completed','dead_letter','superseded')
+            ORDER BY updated_at,id LIMIT 1000""").fetchall()
+        for row in rows:
+            payload = json.loads(row['payload_json'] or '{}')
+            state = payload.get('source_state') or {}
+            recovered = payload.get('source_recovery') or {}
+            if row['status'] == 'needs_attention':
+                status = 'needs_attention'
+                signature = state.get('signature') or hashlib.sha256(json.dumps(
+                    {k:state.get(k) for k in ('category','code','provider','generation')},sort_keys=True).encode()).hexdigest()
+                event_key = 'attention:' + str(signature)
+            elif recovered.get('last_recovered_at') and row['status'] not in ('waiting_source','retry_source','leased_source'):
+                status = 'source_recovered'
+                event_key = 'recovered:' + str(recovered.get('recovery_generation', recovered['last_recovered_at']))
+            else:
+                continue
+            subscriptions = database.execute('SELECT request_key,context_json FROM notification_subscriptions WHERE job_id=?',(row['id'],)).fetchall()
+            contexts = [(s[0],json.loads(s[1])) for s in subscriptions]
+            if not contexts:
+                context=json.loads(row['metadata_json'] or '{}').get('notification') or {}
+                if self._valid_context({'notification':context}):
+                    contexts=[('legacy',context)]
+            for recipient_key,context in contexts:
+                receipt=database.execute('SELECT * FROM notification_lifecycle_deliveries WHERE job_id=? AND recipient_key=? AND event_key=?',
+                    (row['id'],recipient_key,event_key)).fetchone()
+                if receipt and not (receipt['state']=='retry' and receipt['next_attempt_at']<=now):continue
+                token=secrets.token_urlsafe(32)
+                database.execute("""INSERT INTO notification_lifecycle_deliveries
+                    (job_id,recipient_key,context_json,event_key,event_status,state,attempts,lease_owner,lease_token,lease_expires_at,created_at,updated_at)
+                    VALUES(?,?,?,?,?,'leased',1,?,?,?,?,?) ON CONFLICT(job_id,recipient_key,event_key) DO UPDATE SET
+                    state='leased',attempts=notification_lifecycle_deliveries.attempts+1,
+                    lease_owner=excluded.lease_owner,lease_token=excluded.lease_token,
+                    lease_expires_at=excluded.lease_expires_at,updated_at=excluded.updated_at""",
+                    (row['id'],recipient_key,json.dumps(context),event_key,status,owner,token,now+max(30.,lease_seconds),now,now))
+                decoded=self._decode(row,token,request_key=recipient_key,context=context,kind='lifecycle')
+                from dataclasses import replace
+                return replace(decoded,terminal_status=status)
+        return None
 
     def _select(self, database: sqlite3.Connection, now: float) -> tuple[sqlite3.Row | None, str]:
         for table, statuses in (
@@ -344,6 +399,15 @@ class NotificationStore:
         now = self.clock()
         with self.connect() as database:
             database.execute("BEGIN IMMEDIATE")
+            lifecycle=database.execute("SELECT * FROM notification_lifecycle_deliveries WHERE job_id=? AND state='leased' AND lease_token=?",(job_id,token)).fetchone()
+            if lifecycle:
+                expected_chat=str(json.loads(lifecycle['context_json']).get('chat_id') or '')
+                if chat_id is not None and str(chat_id)!=expected_chat:
+                    raise ValueError('notification response chat does not match its request')
+                database.execute("""UPDATE notification_lifecycle_deliveries SET state='delivered',
+                    lease_owner='',lease_token='',lease_expires_at=0,last_error='',delivered_at=?,updated_at=?,chat_id=?,message_id=? WHERE id=?""",
+                    (now,now,expected_chat,str(message_id or ''),lifecycle['id']))
+                return
             subscribed = database.execute("""SELECT d.id,s.context_json,d.kind FROM notification_subscription_deliveries d
                 JOIN notification_subscriptions s ON s.id=d.subscription_id
                 WHERE s.job_id=? AND d.state='leased' AND d.lease_token=?""", (job_id,token)).fetchone()
@@ -394,6 +458,13 @@ class NotificationStore:
         now = self.clock()
         with self.connect() as database:
             database.execute("BEGIN IMMEDIATE")
+            lifecycle=database.execute("SELECT * FROM notification_lifecycle_deliveries WHERE job_id=? AND state='leased' AND lease_token=?",(job_id,token)).fetchone()
+            if lifecycle:
+                delay=min(maximum_delay_seconds,30*2**min(30,max(0,lifecycle['attempts']-1)))
+                database.execute("""UPDATE notification_lifecycle_deliveries SET state='retry',next_attempt_at=?,
+                    lease_owner='',lease_token='',lease_expires_at=0,last_error=?,updated_at=? WHERE id=?""",
+                    (now+delay,str(error)[:1000],now,lifecycle['id']))
+                return
             subscribed = database.execute("""SELECT d.id,d.attempts,d.kind FROM notification_subscription_deliveries d
                 JOIN notification_subscriptions s ON s.id=d.subscription_id
                 WHERE s.job_id=? AND d.state='leased' AND d.lease_token=?""", (job_id,token)).fetchone()

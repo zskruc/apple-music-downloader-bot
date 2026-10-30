@@ -3,6 +3,7 @@
 gamdl==3.9.1
 httpx==0.28.1
 mutagen==1.48.1
+PyYAML==6.0.3
 lxml==6.1.2
 regex==2026.8.31
 requests==2.34.2

@@ -12,6 +12,7 @@ from typing import Any
 
 from .io import atomic_write_json
 from .fingerprint import media_fingerprint
+from .faults import (LyricFault, LyricFaultError, classify_exception, source_context_key)
 from .queue import QueueJob, QueueStore
 from .resolver import CandidateRejected, LegacyGateway, SourceResolutionEngine, _rollback_sidecar
 from .text import normalize_text
@@ -44,16 +45,24 @@ class SourceWorker:
         self.running = True
 
     def health(self, **extra: Any) -> None:
-        atomic_write_json(
-            self.health_path,
-            {
-                "updated_at": time.time(),
-                "owner": self.owner,
-                "pid": os.getpid(),
-                "queue": self.store.stats(),
-                **extra,
-            },
-        )
+        payload={"updated_at":time.time(),"owner":self.owner,"pid":os.getpid(),
+                 "queue":self.store.stats(),**extra}
+        # Keep a current liveness heartbeat while the bounded deep probes run.
+        atomic_write_json(self.health_path,payload)
+        try:
+            from .service_health import ServiceHealthMonitor
+            monitor=getattr(self,"service_monitor",None)
+            if monitor is None:
+                monitor=ServiceHealthMonitor.from_environment(self.automation_dir)
+                self.service_monitor=monitor
+            report=monitor.update(payload)
+            payload["business_status"]=report.get("status", report.get("business_status"))
+            payload["business_health"]=report
+        except Exception as exc:
+            payload["business_status"]="degraded"
+            payload["health_evaluation_error"]=type(exc).__name__
+        payload["updated_at"]=time.time()
+        atomic_write_json(self.health_path,payload)
 
     def character_result(self, media_path: Path, result: dict[str, Any]) -> dict[str, Any]:
         result = dict(result)
@@ -65,12 +74,20 @@ class SourceWorker:
         return result
 
     def process_source(self, job: QueueJob) -> None:
+        context_key = source_context_key(Path(job.media_path), job.metadata, job.source_url)
         try:
+            validator = getattr(getattr(self, "gateway", None), "validate_media", None)
+            if callable(validator):
+                validator(Path(job.media_path), expected_fingerprint=job.fingerprint_data)
             resolution = self.engine.resolve(
                 media_path=Path(job.media_path),
                 metadata=job.metadata,
                 expected_fingerprint=job.fingerprint_data,
             )
+            if (resolution.existing is not None or resolution.publication is not None
+                    or resolution.not_required is not None
+                    or normalize_text(str((resolution.alignment_payload or {}).get("reference_text") or ""))):
+                job = self.store.mark_source_recovered(job.id, job.lease_token)
             if resolution.existing is not None:
                 # Reusing a sidecar still needs a scan and final content/audio
                 # checks. This job did not publish the existing file, so its
@@ -104,7 +121,8 @@ class SourceWorker:
                 )
             else:
                 payload = dict(resolution.alignment_payload or {})
-                for key in ("source_recovery", "audio_identity", "workflow_created_at", "source_history_from_job"):
+                for key in ("source_recovery", "source_state", "source_fault_history",
+                            "audio_identity", "workflow_created_at", "source_history_from_job"):
                     if key in job.payload:
                         payload[key] = job.payload[key]
                 history = list(job.payload.get("source_diagnostics_history") or [])
@@ -113,6 +131,10 @@ class SourceWorker:
                     "observations": payload.get("source_observations") or []})
                 payload["source_diagnostics_history"] = history[-24:]
                 if not normalize_text(str(payload.get("reference_text") or "")):
+                    if resolution.faults:
+                        self.store.source_fault(job.id, job.lease_token,
+                            faults=list(resolution.faults), diagnostic_payload=payload, context_key=context_key)
+                        return
                     error = resolution.retryable_error or "no_trusted_lyric_reference"
                     # Initial discovery gets four attempts with real backoff.
                     # Later slow rechecks do one pass each, keeping the job and
@@ -133,12 +155,9 @@ class SourceWorker:
                     reason=resolution.reason,
                 )
         except Exception as exc:
-            self.store.fail(
-                job.id,
-                job.lease_token,
-                stage="source",
-                error=f"{type(exc).__name__}:{exc}",
-            )
+            fault = classify_exception(exc, stage="source")
+            self.store.source_fault(job.id, job.lease_token, faults=[fault.as_dict()],
+                diagnostic_payload=job.payload, context_key=context_key)
 
     def process_validation(self, job: QueueJob) -> None:
         candidate_path = Path(str(job.payload.get("candidate_path") or ""))
@@ -216,6 +235,9 @@ class SourceWorker:
                 raise RuntimeError("published lyric changed before completion")
 
         try:
+            validator=getattr(self.gateway,"validate_media",None)
+            if callable(validator):
+                result["media_integrity"]=validator(Path(job.media_path),expected_fingerprint=job.fingerprint_data)
             from youtube_ingest import trigger_navidrome_scan
 
             intent = result.get("character_adaptation_intent") or {}
@@ -251,10 +273,19 @@ class SourceWorker:
                     verify_publication()
             result = self.character_result(Path(job.media_path), job.result)
             verify_publication()
-            if not trigger_navidrome_scan():
-                raise RuntimeError("Navidrome scan request was not accepted")
+            scanner=getattr(self.gateway,"request_player_scan",None)
+            if not (scanner() if callable(scanner) else trigger_navidrome_scan()):
+                raise LyricFaultError(LyricFault("playback", "scan_request_not_accepted", True, "retry"))
             verify_publication()
             result["navidrome_scan_requested_at"] = time.time()
+            verifier = getattr(self.gateway, "verify_player", None)
+            if callable(verifier):
+                evidence = verifier(job, result)
+                if evidence is False:
+                    raise LyricFaultError(LyricFault("playback", "player_verification_failed", True, "retry"))
+                if isinstance(evidence, dict):
+                    result["player_verification"] = evidence
+                verify_publication()
             self.store.complete(
                 job.id,
                 job.lease_token,
@@ -269,31 +300,43 @@ class SourceWorker:
                     and result.get("sidecar_path") and result.get("candidate_sha256")):
                 _rollback_sidecar(result["sidecar_path"], result.get("backup_path", ""),
                     result["candidate_sha256"])
-            self.store.fail(
-                job.id,
-                job.lease_token,
-                stage="scan",
-                error=f"{type(exc).__name__}:{exc}",
-                base_delay_seconds=30,
-            )
+            fault = classify_exception(exc, stage="scan")
+            with self.store.connect() as database:
+                row = database.execute("SELECT * FROM jobs WHERE id=?", (job.id,)).fetchone()
+                attempts = self.store._stage_attempts(database, row, "scan")
+                exhausted = attempts >= self.store._stage_limit(row, "scan", attempts)
+            if not fault.retryable or exhausted:
+                self.store.hold_for_attention(job.id, job.lease_token, stage="scan",
+                    fault=fault.as_dict(), budget_exhausted=exhausted)
+            else:
+                self.store.fail(job.id, job.lease_token, stage="scan",
+                    error=fault.category + ":" + fault.code, base_delay_seconds=30, jitter=True)
 
     def one_cycle(self) -> bool:
         now = time.monotonic()
         if now - self.last_reconcile_at >= self.reconcile_interval:
             recovered = self.store.recover_missing_source_jobs()
             refreshed = self.store.refresh_changed_active_jobs()
+            resumed = self.store.reconcile_source_holds()
+            try:
+                report=json.loads((self.automation_dir/"service-health.json").read_text())
+                dependency_resumed=self.store.resume_dependency_holds(report.get("probe_results") or {})
+                resumed.extend(dependency_resumed)
+            except (OSError,ValueError,AttributeError):
+                pass
             self.last_reconcile_at = now
-            if refreshed or recovered:
+            if refreshed or recovered or resumed:
                 self.health(
                     stage="fingerprint_reconciled",
                     refreshed_job_ids=[item.job.id for item in refreshed],
                     recovered_source_jobs=recovered,
+                    resumed_source_jobs=resumed,
                 )
         self.store.reclaim_expired()
         for stage, handler in (
             ("validation", self.process_validation),
-            ("source", self.process_source),
             ("scan", self.process_scan),
+            ("source", self.process_source),
         ):
             job = self.store.claim(
                 stage,
@@ -302,7 +345,9 @@ class SourceWorker:
             )
             if job is not None:
                 self.health(stage=stage, job_id=job.id)
-                handler(job)
+                from .worker_heartbeat import job_heartbeat
+                with job_heartbeat(getattr(self, "health_path", self.store.database_path.parent / "source-worker-health.json"), stage=stage, job_id=job.id):
+                    handler(job)
                 return True
         self.health(stage="idle")
         return False

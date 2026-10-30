@@ -51,6 +51,10 @@ def main() -> int:
             "YT_STATE_DIR": directory + "/youtube",
             "BILI_STATE_DIR": directory + "/bilibili",
             "AMDL_WORD_LYRICS_STATE_DIR": directory + "/lyrics",
+            # Legacy fixtures are arbitrary bytes and have no real player.
+            # New integrity/lifecycle tests explicitly enable these controls.
+            "WORD_LYRICS_MEDIA_INTEGRITY_ENABLED": "false",
+            "WORD_LYRICS_PLAYER_VERIFY_ENABLED": "false",
             "TELEGRAM_BOT_TOKEN": "",
             "SYNOLOGY_CHAT_ENABLED": "false",
         })

@@ -8,6 +8,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ..faults import classify_exception, retry_delay
+
 
 @dataclass(frozen=True, slots=True)
 class AMLLLyric:
@@ -72,7 +74,7 @@ class AMLLClient:
             f"{self.base_url}{path}?{query}",
             headers={
                 "Accept": "application/json",
-                "User-Agent": "WordLyrics/1.0 (+https://github.com/amll-dev/amll-ttml-api)",
+                "User-Agent": "IcekyWordLyrics/1.0 (+https://github.com/amll-dev/amll-ttml-api)",
             },
         )
         last_error: Exception | None = None
@@ -88,21 +90,32 @@ class AMLLClient:
                 return payload
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
+                    exc.close()
                     return None
                 last_error = exc
-                if exc.code not in {429, 500, 502, 503, 504}:
+                fault = classify_exception(exc, provider="amll")
+                exc.close()
+                if not fault.retryable:
                     raise
-                retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                try:
-                    delay = float(retry_after) if retry_after else 2 ** (attempt - 1)
-                except ValueError:
-                    delay = 2 ** (attempt - 1)
-            except (OSError, TimeoutError, json.JSONDecodeError) as exc:
+                # Long server cooldowns belong to the durable job scheduler,
+                # rather than tying up this provider call or ignoring them.
+                if (fault.retry_after_seconds or 0) > 30:
+                    raise
+                delay = retry_delay(attempt, base=1, maximum=30,
+                                    retry_after=fault.retry_after_seconds)
+            except (OSError, TimeoutError) as exc:
+                fault = classify_exception(exc, provider="amll")
+                if not fault.retryable or fault.category != "transport":
+                    raise
                 last_error = exc
-                delay = 2 ** (attempt - 1)
+                delay = retry_delay(attempt, base=1, maximum=30)
             if attempt < self.attempts:
                 self.sleeper(min(30.0, delay))
-        raise RuntimeError(f"AMLL request failed after retries: {type(last_error).__name__}")
+        # Preserve HTTP status/Retry-After and the exact typed transport cause
+        # for the durable fault classifier. JSON/schema failures are never
+        # caught above as network errors and therefore are not retried here.
+        assert last_error is not None
+        raise last_error
 
     def get(
         self,

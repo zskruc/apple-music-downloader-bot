@@ -64,6 +64,18 @@ def command_retry_source(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_resume_attention(args: argparse.Namespace) -> int:
+    from .faults import source_context_key
+    queue=store();job=queue.get(args.job_id)
+    if job is None:
+        raise RuntimeError("word lyric job does not exist")
+    context=source_context_key(Path(job.media_path),job.metadata,job.source_url)
+    resumed=queue.resume_source_after_change(job.id,context_key=context,
+        reason=args.reason,manual_review=args.reviewed)
+    print_json({"job_id":resumed.id,"status":resumed.status,"all_validation_gates_retained":True})
+    return 0
+
+
 def command_job(args: argparse.Namespace) -> int:
     queue = store()
     job = queue.get(args.job_id)
@@ -77,16 +89,12 @@ def command_job(args: argparse.Namespace) -> int:
 
 
 def command_health(args: argparse.Namespace) -> int:
-    path = state_dir() / "automation" / "source-worker-health.json"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        age = time.time() - float(payload.get("updated_at") or 0)
-    except Exception:
-        return 1
-    if age > args.max_age or payload.get("queue", {}).get("quick_check") != "ok":
-        return 1
-    print_json({"status": "ok", "age_seconds": round(age, 3)})
-    return 0
+    from .service_health import ServiceHealthMonitor
+    monitor=ServiceHealthMonitor.from_environment(state_dir()/"automation")
+    report=monitor.update(run_probes=False)
+    print_json(report)
+    return 0 if (report.get("liveness_ok") if getattr(args,"liveness",False)
+                 else report.get("business_ok")) else 1
 
 
 def command_export_audio(args: argparse.Namespace) -> int:
@@ -164,11 +172,17 @@ def build_parser() -> argparse.ArgumentParser:
     retry_source.add_argument("--job-id", type=int, required=True)
     retry_source.add_argument("--reason", required=True)
     retry_source.set_defaults(func=command_retry_source)
+    resume = commands.add_parser("resume-attention", help="Revalidate an explicitly reviewed held task without bypassing any gate")
+    resume.add_argument("--job-id",type=int,required=True)
+    resume.add_argument("--reason",required=True)
+    resume.add_argument("--reviewed",action="store_true",required=True)
+    resume.set_defaults(func=command_resume_attention)
     job = commands.add_parser("job")
     job.add_argument("--job-id", type=int, required=True)
     job.set_defaults(func=command_job)
     health = commands.add_parser("health")
     health.add_argument("--max-age", type=float, default=90)
+    health.add_argument("--liveness", action="store_true")
     health.set_defaults(func=command_health)
     export = commands.add_parser("export-audio")
     export.add_argument("--job-id", type=int, required=True)

@@ -46,8 +46,9 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt \
     && python -m pip check
 COPY bot/ /app/
+COPY ops/lyrics_network_policy.py /app/lyrics_network_policy.py
 RUN python -m compileall -q /app \
-    && python -c 'import ingest_bot, wrapper_v2_adapter, word_lyrics_automation.source_worker, word_lyrics_automation.nas_alignment_worker' \
+    && python -c 'import ingest_bot, wrapper_v2_adapter, lyrics_network_policy, lyrics_network_policy_runner, word_lyrics_automation.source_worker, word_lyrics_automation.nas_alignment_worker, word_lyrics_automation.service_health, word_lyrics_automation.media_integrity, word_lyrics_automation.player_verification' \
     && python -m gamdl --version && python -m yt_dlp --version && deno --version
 LABEL org.opencontainers.image.title="Apple Music Downloader Bot" \
       org.opencontainers.image.version="${RELEASE_VERSION}"

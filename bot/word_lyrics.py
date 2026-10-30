@@ -1060,6 +1060,14 @@ class WordLyricsService:
             self.client = None
             self.client_initialization_error = type(exc).__name__
 
+    def validate_media_integrity(self, media_path: Path, expected_fingerprint):
+        if not env_flag("WORD_LYRICS_MEDIA_INTEGRITY_ENABLED", True):
+            return {"checked": False}
+        from word_lyrics_automation.media_integrity import validate_media
+        return validate_media(media_path, expected_fingerprint,
+            self.state_dir / "automation" / "media-integrity",
+            timeout_seconds=float(env("WORD_LYRICS_MEDIA_CHECK_TIMEOUT_SECONDS", "120")))
+
     def reference_documents(self, media_path: Path) -> list[tuple[Path, LyricsDocument]]:
         documents: list[tuple[Path, LyricsDocument]] = []
         for suffix in (".lrc", ".ttml"):
@@ -1195,6 +1203,7 @@ class WordLyricsService:
     ) -> tuple[str, str]:
         from word_lyrics_automation.fingerprint import media_fingerprint
 
+        self.validate_media_integrity(media_path, expected_fingerprint)
         if media_fingerprint(media_path) != expected_fingerprint:
             raise NativeAudioChanged("audio changed during native lyric retrieval")
         sidecar_path, backup_path = self.write_sidecar(media_path, ttml)
@@ -1269,6 +1278,7 @@ class WordLyricsService:
             from word_lyrics_automation.fingerprint import media_fingerprint
 
             expected_fingerprint = media_fingerprint(media_path)
+            self.validate_media_integrity(media_path, expected_fingerprint)
             track = inspect_track(media_path, track)
             existing_word = self.existing_word_sidecar(media_path, duration=track.duration)
             if existing_word is not None and not force:

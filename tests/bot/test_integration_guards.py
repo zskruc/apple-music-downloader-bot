@@ -360,6 +360,7 @@ class UnifiedDownloadScheduling(unittest.TestCase):
             "unique_path_strings", "deletion_targets_for_media", "sq_recording_candidate",
             "unified_owned_deletion_paths", "unified_sq_candidates",
             "unified_apple_paths_for_song", "unified_download_phase",
+            "sync_accepted_apple_word_lyrics",
             json_paths=json_paths,
             replace=replace, RecordingCandidate=RecordingCandidate, UnifiedRecording=UnifiedRecording,
             strict_match=strict_match, AppleTrack=AppleTrack,
@@ -385,7 +386,7 @@ class UnifiedDownloadScheduling(unittest.TestCase):
             SQ_MUSIC_SOURCES=("kw", "netease", "qqvip"),
             sq_music_client=lambda: SimpleNamespace(search_lossless=self.sq_match),
             publish_sq_lossless=self.sq_publish,
-            sync_word_lyrics_for_paths=Mock(), trigger_navidrome_scan=lambda: True,
+            sync_word_lyrics_for_paths=Mock(return_value={}), trigger_navidrome_scan=lambda: True,
             redact_sensitive_text=str, log=Mock(),
         )
         self.job = self.ns["Job"]("telegram", "c", "m", [self.apple.url], "alac", "apple_music", 1, task_id=42,
@@ -418,6 +419,8 @@ class UnifiedDownloadScheduling(unittest.TestCase):
         self.ns["process_unified_music_job"](self.job)
         self.assertEqual(self.events, ["apple"])
         self.ns["complete_task_card"].assert_called_once()
+        self.ns["sync_word_lyrics_for_paths"].assert_called_once()
+        self.assertEqual(self.ns["sync_word_lyrics_for_paths"].call_args.args[0], [str(self.apple_path)])
 
     def test_lx_success_stops_before_sq(self):
         self.lx_success = True
